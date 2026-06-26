@@ -1,0 +1,2 @@
+# pinns-fluid-mechanics
+Basic work on Physics-Informed Neural Networks (PINNs) for cardiovascular fluid mechanics.
