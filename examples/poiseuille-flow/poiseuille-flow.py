@@ -192,7 +192,7 @@ def plot_velocity_slice(model, L, H, ny=300, x_loc=None):
 
     # save plot
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "profile_slice.png"),
+    plt.savefig(os.path.join(plots_dir, "velocity_slice.png"),
                 dpi=FIG_DPI)
     # plt.show()
 
