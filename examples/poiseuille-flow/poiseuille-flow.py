@@ -23,6 +23,8 @@ Rugonyi Lab
 
 import os
 import re
+import json
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -52,10 +54,20 @@ N_ITERATIONS = 10000        # train for N iterations
 ITERATIONS_TO_SAVE = [1, 5, 10, 100, 200, 1000, 10000]   # specify which iters after which to save + plot
 
 # --- Establish Paths ---
-parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/poiseuille-flow/'
+parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/poiseuille-flow/n=2200/'
 outputs_dir = os.path.join(parent_dir, 'outputs/')
 plots_dir = os.path.join(parent_dir, 'plots/')
-model_save_prefix = os.path.join(outputs_dir, 'model')
+models_dir = os.path.join(parent_dir, 'models/')
+model_save_prefix = os.path.join(models_dir, 'model')
+
+if not os.path.exists(parent_dir):
+    os.mkdir(parent_dir)
+if not os.path.exists(outputs_dir):
+    os.mkdir(outputs_dir)
+if not os.path.exists(plots_dir):
+    os.mkdir(plots_dir)
+if not os.path.exists(models_dir):
+    os.mkdir(models_dir)
 
 
 # ———————————— MODEL FUNCTIONS ————————————
@@ -372,16 +384,27 @@ dde.saveplot(loss_history, train_state, issave=True,
 plot_loss_curves(loss_history)
 
 # Analyze models over epochs
-model_paths = sorted([os.path.join(outputs_dir, f) 
-                      for f in os.listdir(outputs_dir) if '.pt' in f],
-                     key=lambda x: int(re.search(r'\d+', x).group()))
+model_paths = [os.path.join(models_dir, f) 
+               for f in os.listdir(models_dir) if '.pt' in f]
 
-for model_iter, model_path in zip(ITERATIONS_TO_SAVE, model_paths):
+l_errors = {}
+
+for model_path in model_paths:
+    model_iter = int(re.search(r"\d+", os.path.basename(model_path)).group())
     print(f"\nLoading n={model_iter} model from {model_path}")
+    
     model.restore(model_path)
 
     plot_velocity_slice(model, L, H, model_iter=model_iter)
     plot_velocity_field(model, L, H, model_iter=model_iter)
     plot_error_map(model, L, H, model_iter=model_iter)
-    evaluate_l2(model, L, H, model_iter=model_iter)
-    # dde.utils.external.plot_loss_history(loss_history, os.path.join(plots_dir, 'loss_curves.png'))
+    l2_rel, l_inf = evaluate_l2(model, L, H, model_iter=model_iter)
+    
+    l_errors[model_iter] = {
+        'L2 Norm Error': l2_rel,
+        'Max Absolute (L_inf) Error': l_inf
+    }
+
+l_errors = dict(sorted(l_errors.items()))
+with open(os.path.join(outputs_dir, 'norm_error.json'), 'w') as f:
+    f.write(json.dumps(l_errors, indent=2))
