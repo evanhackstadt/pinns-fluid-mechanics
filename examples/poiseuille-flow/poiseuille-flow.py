@@ -13,7 +13,8 @@ vx = (1/2µ)•(-dP/dx)•(y)•(H-y)
 PINN Model
 - Inputs: position x and y
 - Outputs: predicted vx (x-component of velocity)
-- Loss = L_data + L_pde, where L_pde = 
+- Loss = L_data + L_pde
+    where L_pde = 
 
 Evan Hackstadt
 Rugonyi Lab
@@ -21,6 +22,7 @@ Rugonyi Lab
 
 
 import os
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
@@ -29,15 +31,9 @@ import torch
 import deepxde as dde
 
 
-# --- Establish Paths ---
-parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/poiseuille-flow/'
-outputs_dir = os.path.join(parent_dir, 'outputs/')
-plots_dir = os.path.join(parent_dir, 'plots/')
-model_save_prefix = os.path.join(outputs_dir, 'model')
-
+# ———————————— CONFIG ————————————
 
 # --- DOMAIN CONSTANTS ---
-
 L = 1.0     # length
 H = 2.0     # height
 P1 = 8.0    # inlet pressure
@@ -46,12 +42,20 @@ MU = 1.0    # viscosity
 
 geometry = dde.geometry.Rectangle([0, 0], [L, H])
 
-
 # --- DATA CONSTANTS ---
 N_INTERIOR_PTS = 2000   # default 2000, can reduce for faster debug runs
 N_BOUNDARY_PTS = 200    # default 200, can reduce for faster debug runs
 N_TEST_PTS = 500        # default 500, should reduce in scale to interior/boundary pts
 
+# --- TRAINING CONSTANTS ---
+N_ITERATIONS = 10000        # train for N iterations
+ITERATIONS_TO_SAVE = [1, 5, 10, 100, 200, 1000, 10000]   # specify which iters after which to save + plot
+
+# --- Establish Paths ---
+parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/poiseuille-flow/'
+outputs_dir = os.path.join(parent_dir, 'outputs/')
+plots_dir = os.path.join(parent_dir, 'plots/')
+model_save_prefix = os.path.join(outputs_dir, 'model')
 
 
 # ———————————— MODEL FUNCTIONS ————————————
@@ -69,7 +73,7 @@ def pde_loss(x, u):
     # compute second term (∆P / L)
     dPdx = (P2 - P1) / L
     
-    # return the residual since difference is known to =0
+    # return the residual: difference is known to =0
     return (MU * du_yy) - dPdx
 
 
@@ -81,8 +85,6 @@ def walls(x, on_boundary: bool):
     Returns 1 if on or very close to a wall, 0 otherwise
     '''
     return on_boundary and (np.isclose(x[1], 0) or np.isclose(x[1], H))
-
-bc = dde.DirichletBC(geometry, lambda x: 0, walls)
 
 
 # --- Ground Truth PDE Analytical Solution ---
@@ -122,6 +124,17 @@ def init_data_and_net():
     
     return data, net
 
+# --- Custom Callback to save the model at specified epochs ---
+class EpochSaver(dde.callbacks.Callback):
+    def __init__(self):
+        super().__init__()
+
+    def on_epoch_end(self):
+        current_iter = model.train_state.iteration
+        if current_iter in ITERATIONS_TO_SAVE:
+            print(f"Saving epoch {current_iter}...")
+            model.save(model_save_prefix)
+
 
 
 # ———————————— ANALYSIS FUNCTIONS ————————————
@@ -155,7 +168,7 @@ def make_grid(L, H, nx=200, ny=100):
 
 
 # --- Velocity Slice ---
-def plot_velocity_slice(model, L, H, ny=300, x_loc=None):
+def plot_velocity_slice(model, L, H, model_iter=10000, ny=300, x_loc=None):
     """
     Plot vx(y) at a fixed x-slice: PINN prediction vs. analytical parabola.
  
@@ -175,7 +188,7 @@ def plot_velocity_slice(model, L, H, ny=300, x_loc=None):
     vx_true = analytical(pts)           # (ny, 1)
 
     # plot
-    fig, ax = plt.subplots(figsize=(5, 5), dpi=FIG_DPI)
+    fig, ax = plt.subplots(figsize=(4, 4), dpi=FIG_DPI)
     ax.plot(vx_true.ravel(), y_vals, color=COLOR_TRUE,
             lw=2.5, label="Analytical", zorder=3)
     ax.plot(vx_pred.ravel(), y_vals, color=COLOR_PINN,
@@ -184,7 +197,7 @@ def plot_velocity_slice(model, L, H, ny=300, x_loc=None):
     # format plot
     ax.set_xlabel("$v_x$")
     ax.set_ylabel("$y$")
-    ax.set_title(f"Velocity profile at $x = {x_loc:.2f}$")
+    ax.set_title(f"Velocity profile at $x = {x_loc:.2f}$ \n(iterations={model_iter})")
     ax.legend(framealpha=0.9)
     ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
     ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
@@ -192,13 +205,14 @@ def plot_velocity_slice(model, L, H, ny=300, x_loc=None):
 
     # save plot
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "velocity_slice.png"),
+    plt.savefig(os.path.join(plots_dir, f"{model_iter}_velocity_slice.png"),
                 dpi=FIG_DPI)
     # plt.show()
+    plt.close()
 
 
 # --- Velocity 2D Heatmap ---
-def plot_velocity_field(model, L, H, nx=200, ny=100):
+def plot_velocity_field(model, L, H, model_iter=10000, nx=200, ny=100):
     """
     2-D heatmap of predicted vx over the full domain.
     """
@@ -207,25 +221,26 @@ def plot_velocity_field(model, L, H, nx=200, ny=100):
     vx_pred = model.predict(pts).reshape(ny, nx)
 
     # plot
-    fig, ax = plt.subplots(figsize=(4, 6), dpi=FIG_DPI)
+    fig, ax = plt.subplots(figsize=(5, 6), dpi=FIG_DPI)
     pcm = ax.pcolormesh(X, Y, vx_pred, cmap=CMAP_VEL, shading="auto")
     plt.colorbar(pcm, ax=ax, label="$v_x$")
 
     # format
     ax.set_xlabel("$x$")
     ax.set_ylabel("$y$")
-    ax.set_title("PINN velocity field $v_x(x, y)$")
+    ax.set_title(f"PINN velocity field $v_x(x, y)$ \n(iterations={model_iter})")
     ax.set_aspect("equal")
 
     # save plot
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "velocity_field.png"),
+    plt.savefig(os.path.join(plots_dir, f"{model_iter}_velocity_field.png"),
                 dpi=FIG_DPI)
     # plt.show()
+    plt.close()
 
 
 # --- Error 2D Heatmap ---
-def plot_error_map(model, L, H, nx=200, ny=100):
+def plot_error_map(model, L, H, model_iter=10000, nx=200, ny=100):
     """
     Spatial map of |PINN - analytical|.
     Reveals where error concentrates: walls, centerline, inlet, outlet.
@@ -237,7 +252,7 @@ def plot_error_map(model, L, H, nx=200, ny=100):
     err     = np.abs(vx_pred - vx_true)
 
     # plot
-    fig, ax = plt.subplots(figsize=(4, 6), dpi=FIG_DPI)
+    fig, ax = plt.subplots(figsize=(5, 6), dpi=FIG_DPI)
     pcm = ax.pcolormesh(X, Y, err, cmap=CMAP_ERR, shading="auto")
     cbar = plt.colorbar(pcm, ax=ax, label="|error|")
     
@@ -248,14 +263,15 @@ def plot_error_map(model, L, H, nx=200, ny=100):
  
     ax.set_xlabel("$x$")
     ax.set_ylabel("$y$")
-    ax.set_title("Absolute error  $|\\hat{v}_x - v_x^*|$")
+    ax.set_title("Absolute error  $|\\hat{v}_x - v_x^*|$ " + f"\n(iterations={model_iter})")
     ax.set_aspect("equal")
 
     # save plot
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, "error_map.png"),
+    plt.savefig(os.path.join(plots_dir, f"{model_iter}_error_map.png"),
                 dpi=FIG_DPI)
     # plt.show()
+    plt.close()
 
 
 # --- Loss Curves ---
@@ -289,10 +305,11 @@ def plot_loss_curves(losshistory):
     plt.savefig(os.path.join(plots_dir, "loss_curves.png"),
                 dpi=FIG_DPI)
     # plt.show()
+    plt.close()
 
 
 # --- L2 Test Error ---
-def evaluate_l2(model, L, H, nx=200, ny=100, verbose=True):
+def evaluate_l2(model, L, H, model_iter=10000, nx=200, ny=100, verbose=True):
     """
     Compute L² relative error and L∞ (max absolute) error on a dense grid.
  
@@ -311,6 +328,7 @@ def evaluate_l2(model, L, H, nx=200, ny=100, verbose=True):
     l_inf  = np.max(np.abs(diff))
  
     if verbose:
+        print(f"ITERATIONS={model_iter}")
         print(f"L² relative error : {l2_rel:.4e}")
         print(f"L∞ max abs error  : {l_inf:.4e}")
         if l2_rel < 0.01:
@@ -326,6 +344,8 @@ def evaluate_l2(model, L, H, nx=200, ny=100, verbose=True):
 
 # ———————————— MAIN ————————————
 
+bc = dde.DirichletBC(geometry, lambda x: 0, walls)
+
 data, net = init_data_and_net()
 
 model = dde.Model(data, net)
@@ -333,10 +353,14 @@ model.compile(optimizer="adam",
               lr=1e-3,
               metrics=['l2 relative error'])
 
+epoch_saver = EpochSaver()
+
+
 # Train the model
 # Comment out if you want to restore a previous model
 
-loss_history, train_state = model.train(iterations=10000,
+loss_history, train_state = model.train(iterations=N_ITERATIONS,
+                                        callbacks=[epoch_saver],
                                         display_every=1000,
                                         model_save_path=model_save_prefix)
 
@@ -344,15 +368,20 @@ dde.saveplot(loss_history, train_state, issave=True,
             isplot=True, output_dir=outputs_dir)
 
 
-# Restore the model from training
-model_path = os.path.join(outputs_dir,
-                          [f for f in os.listdir(outputs_dir) if '.pt' in f][0])
-model.restore(model_path)
-
-# Call analysis functions
-plot_velocity_slice(model, L, H)
-plot_velocity_field(model, L, H)
-plot_error_map(model, L, H)
+# Analyze the models
 plot_loss_curves(loss_history)
-evaluate_l2(model, L, H)
-# dde.utils.external.plot_loss_history(loss_history, os.path.join(plots_dir, 'loss_curves.png'))
+
+# Analyze models over epochs
+model_paths = sorted([os.path.join(outputs_dir, f) 
+                      for f in os.listdir(outputs_dir) if '.pt' in f],
+                     key=lambda x: int(re.search(r'\d+', x).group()))
+
+for model_iter, model_path in zip(ITERATIONS_TO_SAVE, model_paths):
+    print(f"\nLoading n={model_iter} model from {model_path}")
+    model.restore(model_path)
+
+    plot_velocity_slice(model, L, H, model_iter=model_iter)
+    plot_velocity_field(model, L, H, model_iter=model_iter)
+    plot_error_map(model, L, H, model_iter=model_iter)
+    evaluate_l2(model, L, H, model_iter=model_iter)
+    # dde.utils.external.plot_loss_history(loss_history, os.path.join(plots_dir, 'loss_curves.png'))
