@@ -14,7 +14,6 @@ PINN Model
 - Inputs: position x and y
 - Outputs: predicted vx (x-component of velocity)
 - Loss = L_data + L_pde
-    where L_pde = 
 
 Evan Hackstadt
 Rugonyi Lab
@@ -45,8 +44,8 @@ MU = 1.0    # viscosity
 geometry = dde.geometry.Rectangle([0, 0], [L, H])
 
 # --- DATA CONSTANTS ---
-N_INTERIOR_PTS = 2000   # default 2000, can reduce for faster debug runs
-N_BOUNDARY_PTS = 200    # default 200, can reduce for faster debug runs
+N_INTERIOR_PTS = 2000   # default 2000, can reduce. Fed to PDE loss.
+N_BOUNDARY_PTS = 200    # default 200, can reduce. Fed to data loss.
 N_TEST_PTS = 500        # default 500, should reduce in scale to interior/boundary pts
 
 # --- TRAINING CONSTANTS ---
@@ -111,7 +110,8 @@ def analytical(x):
 
 
 # --- Create the data and neural network objects for DeepXDE
-def init_data_and_net():
+def init_data_and_net(geometry, pde_loss, bc, N_INTERIOR_PTS,
+                      N_BOUNDARY_PTS, analytical, N_TEST_PTS):
     
     # Generate data by sampling points from the domain
     data = dde.data.PDE(
@@ -358,7 +358,8 @@ def evaluate_l2(model, L, H, model_iter=10000, nx=200, ny=100, verbose=True):
 
 bc = dde.DirichletBC(geometry, lambda x: 0, walls)
 
-data, net = init_data_and_net()
+data, net = init_data_and_net(geometry, pde_loss, bc, N_INTERIOR_PTS,
+                              N_BOUNDARY_PTS, analytical, N_TEST_PTS)
 
 model = dde.Model(data, net)
 model.compile(optimizer="adam",
