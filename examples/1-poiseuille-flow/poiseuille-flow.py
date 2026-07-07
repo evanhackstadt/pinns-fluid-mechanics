@@ -1,19 +1,34 @@
 """
-Simple 2D Poisseuille Flow Example of a Navier-Stokes PINN.
+Navier-Stokes PINN - Simple 2D Poisseuille Flow example.
 
-Spatial domain: 2D rectangle with length L and height H.
+Spatial Domain:
+    2D rectangle of length L and height H
+    Explicitly defined with DeepXDE Rectangle
+
+Known Constants:
+    L, H, pressure P, viscosity µ
 
 Partial Differential Equation (PDE):
-Simplified Navier-Stokes
-0 = -∆P/L + µ•(d2vx / dy2)
+    Simplified Navier-Stokes
+    -∆P/L + µ•(d2vx / dy2) = 0
 
-Therefore, 
-vx = (1/2µ)•(-dP/dx)•(y)•(H-y)
+    with analytical solution
+    vx = (1/2µ)•(-dP/dx)•(y)•(H-y)
 
 PINN Model
-- Inputs: position x and y
-- Outputs: predicted vx (x-component of velocity)
-- Loss = L_data + L_pde
+- Inputs:
+    x position
+    y position
+- Outputs:
+    vx (predicted x-velocity)
+- Data:
+    Interior collocation points (x,y) --> u,v,p --> auto-diff --> PDE loss
+    Boundary condition points (x,y) --> u,v,p --> BC Loss
+- Loss:
+    L_pde = residuals from the NS PDEs above
+    L_bc = residuals from conditions (u=0 at walls, inlet pressure, outlet pressure)
+    L_total = L_pde + L_bc
+    
 
 Evan Hackstadt
 Rugonyi Lab
@@ -53,7 +68,7 @@ N_ITERATIONS = 10000        # train for N iterations
 ITERATIONS_TO_SAVE = [1, 5, 10, 100, 200, 1000, 10000]   # specify which iters after which to save + plot
 
 # --- Establish Paths ---
-parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/poiseuille-flow/n=2200/'
+parent_dir = '/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/1-poiseuille-flow/n=2200/'
 outputs_dir = os.path.join(parent_dir, 'outputs/')
 plots_dir = os.path.join(parent_dir, 'plots/')
 models_dir = os.path.join(parent_dir, 'models/')
