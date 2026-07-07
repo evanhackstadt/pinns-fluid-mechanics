@@ -1,0 +1,26 @@
+# --- DOMAIN CONSTANTS ---
+channel:
+  L: 2.0     # length
+  H_MAX: 1.0 # height of channel unobstructed
+  P1: 8.0    # inlet pressure
+  P2: 0.0    # outlet pressure
+  RE: 100    # Reynold's number = rho•U•L/µ, for nondimensionalization
+
+ellipse:
+  ELLIPSE_X_C: 0.0       # center x (0 = middle)
+  ELLIPSE_Y_C: 1.0       # center y (H_MAX = sits on top wall)
+  ELLIPSE_A: 0.6         # horizontal semi-major axis length
+  ELLIPSE_B: 0.3         # vertical semi-minor axis height
+  ELLIPSE_ANGLE: 0.0     # rotation angle in radians - ignore for now
+
+# --- DATA CONSTANTS ---
+data:
+  N_INTERIOR_PTS: 4000   # default 4000, can reduce. Fed to PDE loss.
+  N_BOUNDARY_PTS: 800    # default 800, can reduce. Fed to data loss.
+  N_TEST_PTS: 2000       # default 2000, should reduce in scale to interior/boundary pts
+
+# --- TRAINING CONSTANTS ---
+training:
+  N_ITERATIONS: 20000        # train for N iterations with Adam before L-BFGS
+  MAX_ITER: 15000            # max iterations to run L-BFGS after Adam
+  ITERATIONS_TO_SAVE: [1000, 10000]   # specify intermediate iters to save + plot
