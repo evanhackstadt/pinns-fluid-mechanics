@@ -1,1 +1,4 @@
 .vscode
+plots/
+models/
+outputs/
