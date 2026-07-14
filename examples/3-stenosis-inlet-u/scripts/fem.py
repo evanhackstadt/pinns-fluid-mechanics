@@ -98,7 +98,15 @@ def build_function_space_and_bcs(msh, facet_tags, cfg):
     )
     bc_inlet = fem.dirichletbc(u_in, inlet_dofs_2d, W.sub(0))
     
-    bcs = [bc_walls, bc_inlet]
+    # Pin pressure at one outlet DOF to remove the nullspace
+    p_zero = fem.Function(W1)
+    p_zero.x.array[:] = 0.0
+    outlet_dofs = fem.locate_dofs_topological(
+        (W.sub(1), W1), msh.topology.dim - 1, outlet_facets
+    )
+    bc_outlet_p = fem.dirichletbc(p_zero, outlet_dofs, W.sub(1))
+    
+    bcs = [bc_walls, bc_inlet, bc_outlet_p]
     
     # Boundary integration measure using your Gmsh facet tags
     ds = ufl.Measure("ds", domain=msh, subdomain_data=facet_tags)
@@ -119,25 +127,18 @@ def solve_navier_stokes(W, msh, bcs, ds, n, cfg, w_init=None):
 
     u0, p0 = split(w)
     v, q   = TestFunctions(W)
-        
-    # Iteratively solve from easy low Re --> high Re
-    # E.g., stepping from Re=10 (near-Stokes) to Re=1000 (target) in 10 steps
-    re_steps = np.logspace(np.log10(10.0), np.log10(cfg.Re), num=10)
-    
-    # Initialize with the lowest Reynolds number in your sequence
-    nu = fem.Constant(msh, PETSc.ScalarType(1.0 / re_steps[0]))
 
     F = (
-        inner(grad(u0) * u0, v) * dx
-        + nu * inner(grad(u0), grad(v)) * dx
-        - p0 * div(v) * dx
-        + q  * div(u0) * dx
+        inner(grad(u0) * u0, v) * dx            # convective term
+        + (1/cfg.Re) * inner(grad(u0), grad(v)) * dx    # viscous term
+        - p0 * div(v) * dx                      # pressure-velocity coupling
+        + q  * div(u0) * dx                     # continuity
     )
     J = derivative(F, w)
     
     # Weak boundary integral for outlet pressure
     # (Sign convention dictates adding this term for normal outflow)
-    F += cfg.P_out * ufl.inner(n, v) * ds(2)
+    # F += cfg.P_out * ufl.inner(n, v) * ds(2)
 
     problem = fem_petsc.NonlinearProblem(F, w, bcs=bcs, J=J,
                                petsc_options_prefix="ns_")
@@ -156,24 +157,13 @@ def solve_navier_stokes(W, msh, bcs, ds, n, cfg, w_init=None):
     PETSc.Options()[f"{snes_prefix}mat_mumps_icntl_25"]    = 0
     problem.solver.setFromOptions()
 
-    # Solve nonlinear problem
-    for current_re in re_steps:
-        # Update the kinematic viscosity dynamically
-        nu.value = 1.0 / current_re
         
-        PETSc.Sys.Print(f"Solving N-S for Re = {current_re:.1f}")
-        
-        # Solve the non-linear problem
-        # w.x.petsc_vec contains the previous solution (or w_stokes initially)
-        problem.solver.solve(None, w.x.petsc_vec)
-        
-        # Scatter forward to update parallel ghost values
-        w.x.scatter_forward()
-        
-        converged = problem.solver.getConvergedReason() > 0
-        if not converged:
-            PETSc.Sys.Print(f"Solver diverged at Re = {current_re}. Halting.")
-            break
+    # Solve the non-linear problem
+    # w.x.petsc_vec contains the previous solution (or w_stokes initially)
+    problem.solver.solve(None, w.x.petsc_vec)
+    
+    # Scatter forward to update parallel ghost values
+    w.x.scatter_forward()
 
     # Query solver for status and iterations
     converged = problem.solver.getConvergedReason() > 0
@@ -203,7 +193,7 @@ def solve_stenosis(cfg, msh_file):
 
 
 # --- Get FEM Outputs (Ground Truth) ---
-def fem_predict(u_sol, p_sol, msh, query: np.ndarray):
+def fem_predict(u_sol, p_sol, msh, query: np.ndarray, cfg):
     """
     Evaluate FEM solution at arbitrary (x, y) coordinates.
 
@@ -235,5 +225,16 @@ def fem_predict(u_sol, p_sol, msh, query: np.ndarray):
     u_vals = u_sol.eval(points_on_proc, cells)[:, 0:1]  # shape (N, 1)
     v_vals = u_sol.eval(points_on_proc, cells)[:, 1:2]  # shape (N, 1)
     p_vals = p_sol.eval(points_on_proc, cells)  # shape (N, 1)
+    
+    # Nondimensionalization
+    u_vals /= cfg.U_ref
+    v_vals /= cfg.U_ref
+    p_vals /= cfg.U_ref**2
+    
+    
+    print(f"u range: [{u_vals.min():.3f}, {u_vals.max():.3f}]")
+    print(f"v range: [{v_vals.min():.3f}, {v_vals.max():.3f}]")
+    print(f"p range: [{p_vals.min():.3f}, {p_vals.max():.3f}]")
+    
 
     return np.concatenate([query_f32, u_vals, v_vals, p_vals], axis=1)

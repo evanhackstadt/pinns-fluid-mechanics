@@ -20,14 +20,16 @@ class StenosisConfig:
     # --- Geometry Variables ---
     # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
     cases: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(0.2, 0.1), (0.4, 0.3)]
+        default_factory=lambda: [(0.2, 0.1)]
     )
     
     
     # --- Physics ---
-    Re: float = 100    # Reynold's number = rho•U•L/µ, for nondimensionalization
-    u_in_max: float = 1.5   # max inlet velocity (will be at H/2 centerline)
-    P_out: float = 0.0    # outlet pressure
+    Re: float = 100         # Reynold's number = rho•U•L/µ, for nondimensionalization
+    u_in_max: float = 1.0   # max inlet velocity (will be at H/2 centerline)
+    P_out: float = 0.0      # outlet pressure
+    U_ref: float = 1.0      # rerence x-velocity for nondimensionalization
+                            # P_ref = rho * U_ref^2, with rho=1 --> P_ref = 1.0
     
     
     # --- PINN ---

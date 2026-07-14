@@ -24,15 +24,18 @@ from config import StenosisConfig
 
 # ———————————— GLOBAL CONSTANTS ————————————
 # need these for functions called by DeepXDE, since it can't pass more args
-L = H_MAX = X_C = Y_C = P1 = P2 = RE = A = B = 0    # placeholder
+
+# declare vars with placeholder:
+L = H_MAX = X_C = Y_C = U_IN_MAX = P_OUT = U_REF = RE = A = B = 0
 
 def set_global_constants(cfg, a, b):
     globals()['L']        = cfg.L
     globals()['H_MAX']    = cfg.H_max
     globals()['X_C']      = cfg.x_c
     globals()['Y_C']      = cfg.y_c
-    globals()['u_in_max'] = cfg.u_in_max
-    globals()['P_out']    = cfg.P_out
+    globals()['U_IN_MAX'] = cfg.u_in_max
+    globals()['P_OUT']    = cfg.P_out
+    globals()['U_REF']    = cfg.U_ref
     globals()['RE']       = cfg.Re
     globals()['A']        = a
     globals()['B']        = b
@@ -58,7 +61,7 @@ def walls(x, on_boundary):
 # Initial velocity profile = Poiseuille parabola
 def inlet_u(x):
     y = x[:, 1:2]
-    return 1.5 * (1 - (y / H_MAX) ** 2)     # max u at H/2
+    return (4 * U_REF / H_MAX**2) * y * (H_MAX - y) / U_REF  # = parabola, max=1
 
 
 # --- Define the PDE Residual ---

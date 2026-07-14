@@ -73,7 +73,7 @@ def run_case(cfg: StenosisConfig, a: float, b: float,
         mask = ellipse_mask(flat[:, 0], flat[:, 1], cfg, a, b)
         query = flat[mask]
         
-        fem_vals = fem_predict(u_sol, p_sol, msh, query)    # fem_vals also holds query pts
+        fem_vals = fem_predict(u_sol, p_sol, msh, query, cfg)    # fem_vals also holds query pts        
         np.savez(fem_file, query=query, vals=fem_vals)
         print(f"FEM solution saved to {fem_file}")
     else:
