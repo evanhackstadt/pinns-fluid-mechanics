@@ -22,13 +22,19 @@ Rugonyi Lab
 - Inlet pressure = 1.0
 - Outlet pressure = 0.0
 
-## Explicit Navier-Stokes PDE
+## Explicit Navier-Stokes PDEs
 
-`
-∂u/∂x + ∂v/∂y = 0
-u•∂u/∂x + v•∂u/∂y + ∂p/∂x - (1/RE)•(∂2u/∂x2 + ∂2u/∂y2) = 0
-u•∂v/∂x + v•∂v/∂y + ∂p/∂y - (1/RE)•(∂2v/∂x2 + ∂2v/∂y2) = 0
-`
+```math
+\frac{\partial u}{\partial x} + \frac{\partial v}{\partial y} = 0
+```
+
+```math
+u\frac{\partial u}{\partial x} + v\frac{\partial u}{\partial y} + \frac{\partial p}{\partial x} - \frac{1}{RE}(\frac{\partial^2u}{\partial x^2} + \frac{\partial ^2u}{\partial y^2}) = 0
+```
+
+```math
+u\frac{\partial v}{\partial x} + v\frac{\partial v}{\partial y} + \frac{\partial p}{\partial y} - \frac{1}{RE}(\frac{\partial^2v}{\partial x^2} + \frac{\partial ^2v}{\partial y^2}) = 0
+```
 
 ## PINN Model
 
