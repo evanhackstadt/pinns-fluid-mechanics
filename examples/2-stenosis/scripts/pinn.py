@@ -204,7 +204,7 @@ def train_model(cfg, a, b, model_prefix):
     # Build model
     model = build_model(cfg, a, b)
     
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights)
+    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_adam)
 
 
     # FIRST TRAINING (Adam)
@@ -226,8 +226,8 @@ def train_model(cfg, a, b, model_prefix):
     # SECOND TRAINING (L-BFGS)
     
     # Set params
-    model.compile("L-BFGS", loss_weights=cfg.loss_weights)
-    # dde.config.set_default_float("float64")       # causes MPS errors
+    model.compile("L-BFGS", loss_weights=cfg.loss_weights_lbfgs)
+    # dde.config.set_default_float("float64")       # causes MPS errors on pinn_predict
     dde.optimizers.config.set_LBFGS_options(gtol=cfg.gtol_lbfgs,
                                             ftol=cfg.ftol_lbfgs,
                                             maxiter=cfg.n_lbfgs,
@@ -301,7 +301,7 @@ def restore_model(cfg, a, b, model_prefix):
     
     # Must compile before restore
     model = build_model(cfg, a, b)
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights)
+    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_adam)
 
     # Find the latest saved checkpoint
     checkpoints = glob.glob(f"{model_prefix}-*.pt")
