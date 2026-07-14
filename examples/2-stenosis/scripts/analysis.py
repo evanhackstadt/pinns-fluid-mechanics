@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.patches import Ellipse
 
+from geometry import ellipse_mask
+
 
 CMAP_VAR   = "rainbow"
 CMAP_ERR   = "hot_r"
@@ -195,34 +197,27 @@ def plot_domain(cfg, a, b, output_dir):
 
 
 # --- Helper: Format Data ---
-def _prepare_grid_data(x, y, values):
-    """Reshape flattened query coordinates into a regular 2D grid for pcolormesh."""
-    x = np.asarray(x).ravel()
-    y = np.asarray(y).ravel()
-    values = np.asarray(values).ravel()
+def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
+    # Reconstruct the original uniform grid axes
+    xs = np.linspace(-cfg.L/2, cfg.L/2, cfg.nx)
+    ys = np.linspace(0, cfg.H_max, cfg.ny)
+    XX, YY = np.meshgrid(xs, ys)
+    flat_x, flat_y = XX.ravel(), YY.ravel()
 
-    if x.shape != y.shape or x.shape != values.shape:
-        raise ValueError(
-            f"Coordinate/value shape mismatch: x={x.shape}, y={y.shape}, values={values.shape}"
-        )
+    # Compute the mask
+    outside = ellipse_mask(flat_x, flat_y, cfg, a, b)
+    Z_flat = np.full(len(flat_x), np.nan)
+    # Fill in values at valid points (outside ellipse)
+    Z_flat[outside] = values
 
-    x_vals = np.unique(x)
-    y_vals = np.unique(y)
-    if x_vals.size * y_vals.size != values.size:
-        raise ValueError(
-            "Expected a regular rectilinear grid of query points for heatmap plotting."
-        )
-
-    X_grid, Y_grid = np.meshgrid(x_vals, y_vals)
-    Z_grid = values.reshape(len(y_vals), len(x_vals))
-    return X_grid, Y_grid, Z_grid
+    return XX, YY, Z_flat.reshape(cfg.ny, cfg.nx)
 
 
 # --- Helper: Plot One Heatmap ---
 def plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
                         cbar_math_format=False, cbar_label=None, title=None):
     
-    X_grid, Y_grid, Z_grid = _prepare_grid_data(X, Y, values)
+    X_grid, Y_grid, Z_grid = _prepare_grid_data(X, Y, values, cfg, a, b)
     pcm = axis.pcolormesh(X_grid, Y_grid, Z_grid, cmap=cmap, shading="auto")
     cbar = plt.colorbar(pcm, ax=axis, label=cbar_label)
     

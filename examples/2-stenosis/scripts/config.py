@@ -18,22 +18,17 @@ class StenosisConfig:
     angle: float = 0.0      # ellipse angle, keep 0 for now (can add to variables)
     
     # --- Geometry Variables ---
-    # List of (a, b) ellipse semi-axis pairs to train/evaluate over. Comment out as desired.
-    
-    # Single case:
+    # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
     cases: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.4, 0.3)]
     )
     
-    # 3 cases:
-    # cases: List[Tuple[float, float]] = field(
-    #     default_factory=lambda: [(0.35, 0.2), (0.5, 0.3), (0.65, 0.4)]
-    # )
     
     # --- Physics ---
     Re: float = 100    # Reynold's number = rho•U•L/µ, for nondimensionalization
     P1: float = 1.0    # inlet pressure
     P2: float = 0.0    # outlet pressure
+    
     
     # --- PINN ---
     n_interior: int = 2000   # default 4000, can tune. Fed to PDE loss.
@@ -41,23 +36,36 @@ class StenosisConfig:
     n_test: int = 2000       # default 2000, can tune. Sampled from both interior & boundary.
     
     layers: List[int] = field(default_factory=lambda: [3, 128, 128, 3])     # (x,y,h)->...->(u,v,p)
-    loss_weights: List[float] = field(
-        default_factory=lambda: [1, 100, 1, 100, 100, 100, 100]   # pde_cont, pde_xm, pde_ym, bc_p_in, bc_p_out, bc_wall_u, bc_wall_v
+    
+    # adam
+    n_adam: int = 20000         # train for N iterations with Adam
+    lr: float = 1e-3            # Adam learning rate
+    loss_weights_adam: List[float] = field(
+        # pde_cont, pde_xm, pde_ym, bc_p_in, bc_p_out, bc_wall_u, bc_wall_v
+        default_factory=lambda: [1, 10, 1, 10, 10, 10, 10]
     )
     
-    n_adam: int = 10000         # train for N iterations with Adam
-    lr: float = 1e-3            # Adam learning rate
-    
+    # l-bfgs
     n_lbfgs: int = 20000        # max iterations on L-BFGS
     gtol_lbfgs: float = 1e-10    # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
-    ftol_lbfgs: float = 1e-15    # tight function tolerance, near machine epsilon for float64
+    ftol_lbfgs: float = 0.0
+    loss_weights_lbfgs: List[float] = field(
+        # pde_cont, pde_xm, pde_ym, bc_p_in, bc_p_out, bc_wall_u, bc_wall_v
+        default_factory=lambda: [1, 100, 1, 100, 100, 100, 100]
+    )
     
     iterations_to_save: List[int] = field(
         default_factory=lambda: [1000, 5000, 10000, 20000]
     )
     
+    
     # --- FEM ---
     mesh_size: float = 0.04
+    
+    
+    # --- Visualization ---
+    nx = 200
+    ny = 100
     
     
     # --- Path Management ---

@@ -30,7 +30,7 @@ import gmsh
 # --- Define Ellipse Curve / Channel Height ---
 def ellipse_bottom(x_arr, cfg, a, b):
     """
-    Lower boundary of the ellipse at each x location.
+    Lower boundary of the ellipse at each x location in x_arr.
     Returns y_bottom of ellipse if x in ellipse domain, else H.
     Note that channel height = H(x) = ellipse_bottom(x).
     """
@@ -42,6 +42,16 @@ def ellipse_bottom(x_arr, cfg, a, b):
         cfg.H_max
     )
     return y_bottom
+
+
+# --- Mask Out Points Inside Ellipse ---
+def ellipse_mask(xs, ys, cfg, a, b):
+    """Returns boolean array, True where pts are outside (or on) the ellipse."""
+    # interior condition: (x/a)^2 + (y/b)^2 < 1
+    return (
+        ((xs - cfg.x_c) / a) ** 2 +
+        ((ys - cfg.y_c) / b) ** 2
+    ) >= 1.0
 
 
 # --- Generate Mesh ---

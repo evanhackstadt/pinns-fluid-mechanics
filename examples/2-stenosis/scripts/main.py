@@ -23,7 +23,7 @@ import torch
 import deepxde as dde
 
 from config import StenosisConfig
-from geometry import create_stenosis_mesh, ellipse_bottom
+from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import solve_stenosis, fem_predict
 from pinn import build_model, train_model, restore_model, pinn_predict
 from analysis import (compute_errors, save_errors,
@@ -63,11 +63,16 @@ def run_case(cfg: StenosisConfig, a: float, b: float,
     fem_file = f"{dirs['fem']}/solution.npz"
     if not skip_fem:
         msh, u_sol, p_sol = solve_stenosis(cfg, msh_file)
+        
         # Save on a dense evaluation grid for later comparison
-        xs = np.linspace(-cfg.L/2, cfg.L/2, 200)
-        ys = np.linspace(0, cfg.H_max, 100)
+        xs = np.linspace(-cfg.L/2, cfg.L/2, cfg.nx)
+        ys = np.linspace(0, cfg.H_max, cfg.ny)
         XX, YY = np.meshgrid(xs, ys)
-        query  = np.column_stack([XX.ravel(), YY.ravel()])
+        flat = np.column_stack([XX.ravel(), YY.ravel()])
+        # Mask out points inside the ellipse obstruction
+        mask = ellipse_mask(flat[:, 0], flat[:, 1], cfg, a, b)
+        query = flat[mask]
+        
         fem_vals = fem_predict(u_sol, p_sol, msh, query)    # also holds query pts
         np.savez(fem_file, query=query, vals=fem_vals)
         print(f"FEM solution saved to {fem_file}")
