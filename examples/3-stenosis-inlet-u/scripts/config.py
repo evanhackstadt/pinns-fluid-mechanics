@@ -20,7 +20,7 @@ class StenosisConfig:
     # --- Geometry Variables ---
     # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
     cases: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(0.2, 0.1)]
+        default_factory=lambda: [(0.2, 0.1), (0.4, 0.3)]
     )
     
     
