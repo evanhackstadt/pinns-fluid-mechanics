@@ -230,11 +230,5 @@ def fem_predict(u_sol, p_sol, msh, query: np.ndarray, cfg):
     u_vals /= cfg.U_ref
     v_vals /= cfg.U_ref
     p_vals /= cfg.U_ref**2
-    
-    
-    print(f"u range: [{u_vals.min():.3f}, {u_vals.max():.3f}]")
-    print(f"v range: [{v_vals.min():.3f}, {v_vals.max():.3f}]")
-    print(f"p range: [{p_vals.min():.3f}, {p_vals.max():.3f}]")
-    
 
     return np.concatenate([query_f32, u_vals, v_vals, p_vals], axis=1)
