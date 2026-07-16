@@ -29,7 +29,7 @@ from pinn import build_model, train_model, restore_model, pinn_predict
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
                       plot_output_heatmaps, plot_error_heatmaps,
-                      compare_runs_n)
+                      compare_runs)
 
 
 def parse_args():
@@ -213,7 +213,8 @@ def main():
         
         # Global analysis
         compare_dir = os.path.join(cfg.results_dir, "summary_plots/")
-        compare_runs_n(summary_path, compare_dir, fixed_ab=[0.4, 0.1])
+        compare_runs(summary_path, compare_dir, "n", fixed_ab=[0.4, 0.1])
+        compare_runs(summary_path, compare_dir, "ab", fixed_n=25)
         print(f"\nGlobal visualization complete, saved to {compare_dir}")
 
 
