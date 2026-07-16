@@ -256,8 +256,6 @@ def build_model(fem_data, cfg, a, b, n_labeled):
     labeled_pts = sample_labeled_data(fem_data, n_labeled, cfg, uniform_frac=0.3)
     
     if n_labeled > 0:
-        
-        # After sampling your N points and extracting FEM labels:
         obs_xy  = labeled_pts[:, 0:2]   # (N, 2)
         obs_u   = labeled_pts[:, 2:3]   # (N, 1)
         obs_v   = labeled_pts[:, 3:4]
@@ -315,7 +313,9 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
     # Build model
     model, labeled_pts = build_model(fem_data, cfg, a, b, n_labeled)
     
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_adam)
+    # exclude last 3 loss weights if we don't have labeled points
+    loss_weights = cfg.loss_weights_adam[:-3] if n_labeled <= 0 else cfg.loss_weights_adam
+    model.compile("adam", lr=cfg.lr, loss_weights=loss_weights)
 
 
     # FIRST TRAINING (Adam)
