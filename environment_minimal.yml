@@ -1,0 +1,19 @@
+name: pinns
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - deepxde
+  - matplotlib
+  - numpy
+  - pandas
+  - scikit-learn
+  - scipy
+  - seaborn
+  - pytorch
+  - ipykernel
+  - fenics-dolfinx
+  - gmsh
+  - meshio
+  - python-gmsh
+prefix: /Users/evan/anaconda3/envs/pinns
