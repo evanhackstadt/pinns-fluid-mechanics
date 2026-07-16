@@ -21,15 +21,15 @@ class StenosisConfig:
     # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
     cases: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.4, 0.1),    # wide and shallow, easy
-                                 # TODO add more once n_data chosen
+                                 (0.4, 0.4)     # wide and deeper, hard
                                  ]
     )
     
     
     # --- Physics ---
-    Re: float = 100    # Reynold's number = rho•U•L/µ, for nondimensionalization
+    Re: float = 100         # Reynold's number = rho•U•L/µ, for nondimensionalization
     u_in_max: float = 1.0   # max inlet velocity (will be at H/2 centerline)
-    P_out: float = 0.0    # outlet pressure
+    P_out: float = 0.0      # outlet pressure
     U_ref: float = 1.0      # rerence x-velocity for nondimensionalization
                             # P_ref = rho * U_ref^2, with rho=1 --> P_ref = 1.0
     
@@ -41,29 +41,26 @@ class StenosisConfig:
     n_test: int = 500      # default 2000, can tune. Sampled from both interior & boundary.
     n_labeled: List[int] = field(
         # try different N of labeled data.
-        default_factory=lambda: [25, 100, 250]
+        default_factory=lambda: [0, 3, 5, 10, 25]
     )
     
-    layers: List[int] = field(default_factory=lambda: [3, 128, 128, 3])     # (x,y,h)->...->(u,v,p)
+    layers: List[int] = field(default_factory=lambda: [3, 64, 64, 64, 3])     # (x,y,h)->...->(u,v,p)
     
     # adam
     n_adam: int = 15000         # train for N iterations with Adam
     lr: float = 1e-3            # Adam learning rate
     loss_weights_adam: List[float] = field(
-        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym,
-                                 1, 1, 1, 1, 1, # bc_u_in, bc_v_in, bc_wall_u, bc_wall_v, bc_p_out,
-                                 1, 1, 1]       # bc_obs_u, bc_obs_v, bc_obs_p
+        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
+                                 5, 5,          # bc_inlet_u, bc_inlet_v
+                                 50, 50,        # bc_wall_u, bc_wall_v  <-- important hard constraints
+                                 5,             # bc_outlet_p
+                                 10, 10, 10]    # bc_obs_u, bc_obs_v, bc_obs_p
     )
     
     # l-bfgs
     n_lbfgs: int = 15000        # max iterations on L-BFGS
     gtol_lbfgs: float = 1e-10    # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0
-    loss_weights_lbfgs: List[float] = field(
-        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym,
-                                 1, 1, 1, 1, 1, # bc_u_in, bc_v_in, bc_wall_u, bc_wall_v, bc_p_out,
-                                 1, 1, 1]       # bc_obs_u, bc_obs_v, bc_obs_p
-    )
     
     
     # --- FEM ---
@@ -129,13 +126,13 @@ class StenosisConfig:
                 "y_c": self.y_c,
                 "angle": self.angle,
                 "a": a,
-                "b": b,
+                "b": b
             },
             "Physics": {
                 "Re": self.Re,
                 "n_in_max": self.u_in_max,
                 "P_out": self.P_out,
-                "U_ref": self.U_ref,
+                "U_ref": self.U_ref
             },
             "PINN": {
                 "n_labeled": n,
@@ -147,8 +144,7 @@ class StenosisConfig:
                 "loss_weights_adam": self.loss_weights_adam,
                 "n_lbfgs": self.n_lbfgs,
                 "gtol_lbfgs": self.gtol_lbfgs,
-                "ftol_lbfgs": self.ftol_lbfgs,
-                "loss_weights_lbfgs": self.loss_weights_lbfgs
+                "ftol_lbfgs": self.ftol_lbfgs
             },
             "FEM": {
                 "mesh_size": self.mesh_size

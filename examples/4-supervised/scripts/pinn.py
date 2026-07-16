@@ -23,15 +23,18 @@ import deepxde as dde
 
 # ———————————— GLOBAL CONSTANTS ————————————
 # need these for functions called by DeepXDE, since it can't pass more args
-L = H_MAX = X_C = Y_C = P1 = P2 = RE = A = B = 0    # placeholder
+
+# declare vars with placeholder:
+L = H_MAX = X_C = Y_C = U_IN_MAX = P_OUT = U_REF = RE = A = B = 0
 
 def set_global_constants(cfg, a, b):
     globals()['L']        = cfg.L
     globals()['H_MAX']    = cfg.H_max
     globals()['X_C']      = cfg.x_c
     globals()['Y_C']      = cfg.y_c
-    globals()['u_in_max'] = cfg.u_in_max
-    globals()['P_out']    = cfg.P_out
+    globals()['U_IN_MAX'] = cfg.u_in_max
+    globals()['P_OUT']    = cfg.P_out
+    globals()['U_REF']    = cfg.U_ref
     globals()['RE']       = cfg.Re
     globals()['A']        = a
     globals()['B']        = b
@@ -54,10 +57,12 @@ def outlet(x, on_boundary):
 def walls(x, on_boundary):
     return on_boundary and not inlet(x, on_boundary) and not outlet(x, on_boundary)
 
-# Initial velocity profile = Poiseuille parabola
+# Inlet x-velocity profile
 def inlet_u(x):
     y = x[:, 1:2]
-    return 1.5 * (1 - (y / H_MAX) ** 2)     # max u at H/2
+    # Poiseuille parabola, nondimensionalized by U_ref
+    # Zero at y=0 and y=H_MAX, peak = u_in_max/U_ref at y=H_MAX/2
+    return (U_IN_MAX / U_REF) * 4.0 * (y / H_MAX) * (1.0 - y / H_MAX)
 
 
 # --- Sample Labeled Data ---
@@ -72,6 +77,10 @@ def sample_labeled_data(fem_data, n_points, cfg, uniform_frac=0.3):
     Returns:
         labeled_data: (n_points, 5) subset of fem_data
     """
+    
+    if n_points <= 0:
+        return None
+    
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
 
@@ -175,8 +184,42 @@ def augment_inputs(x: torch.Tensor):
     return torch.cat([x_coords, y_coords, h], dim=1)
 
 
+# --- Loss Re-Weighter custom callback ---
+class LossMagnitudeReweighter(dde.callbacks.Callback):
+    """
+    Reweights loss terms so their magnitudes stay balanced. 
+    Inspired by weight annealing (Wang et al. 2021).
+    Every `period` steps, sets weight_i = median_loss_reference / median_loss_i,
+    where reference is the geometric mean across terms.
+    """
+    def __init__(self, period=2000, alpha=0.8, min_w=0.1, max_w=500.0):
+        super().__init__()
+        self.period = period
+        self.alpha  = alpha
+        self.min_w  = min_w
+        self.max_w  = max_w
 
-# ———————————— PINN WORKHORSE FUNCTIONS ————————————
+    def on_epoch_end(self):
+        it = self.model.train_state.iteration
+        if it % self.period != 0 or it == 0:
+            return
+
+        loss_arr = np.array(self.model.train_state.loss_train)   # (n_terms,)
+        if loss_arr.ndim != 1 or np.any(loss_arr <= 0):
+            return
+
+        ref       = np.exp(np.mean(np.log(loss_arr)))            # geometric mean
+        new_w     = np.clip(ref / loss_arr, self.min_w, self.max_w)
+        old_w     = np.array(self.model.loss_weights, dtype=float)
+        blended   = self.alpha * old_w + (1 - self.alpha) * new_w
+
+        self.model.loss_weights = blended.tolist()
+        print(f"\n[AdaptiveWeights @ iter {it}] {np.round(blended, 2).tolist()}")
+
+
+
+
+# ———————————— PINN WORKHORSE FUNCTIONS / ENTRY POINTS ————————————
 
 # --- Instantiate Model Object ---
 def build_model(fem_data, cfg, a, b, n_labeled):
@@ -205,23 +248,29 @@ def build_model(fem_data, cfg, a, b, n_labeled):
     bc_inlet_v  = dde.DirichletBC(geometry, lambda x: 0, inlet, component=1)     # inlet y-velocity=0
     bc_wall_u   = dde.DirichletBC(geometry, lambda x: 0, walls, component=0)      # no-slip walls
     bc_wall_v   = dde.DirichletBC(geometry, lambda x: 0, walls, component=1)
-    bc_outlet_p = dde.DirichletBC(geometry, lambda x: cfg.P_out, outlet, component=2)   # outlet pressure=0.0
+    bc_outlet_p = dde.DirichletBC(geometry, lambda x: cfg.P_out/cfg.U_ref**2, outlet, component=2)   # outlet pressure=0.0
+    
+    bcs = [bc_inlet_u, bc_inlet_v, bc_wall_u, bc_wall_v, bc_outlet_p]
     
     # Sample labeled data points
     labeled_pts = sample_labeled_data(fem_data, n_labeled, cfg, uniform_frac=0.3)
     
-    # After sampling your N points and extracting FEM labels:
-    obs_xy  = labeled_pts[:, 0:2]   # (N, 2)
-    obs_u   = labeled_pts[:, 2:3]   # (N, 1)
-    obs_v   = labeled_pts[:, 3:4]
-    obs_p   = labeled_pts[:, 4:5]
+    if n_labeled > 0:
+        
+        # After sampling your N points and extracting FEM labels:
+        obs_xy  = labeled_pts[:, 0:2]   # (N, 2)
+        obs_u   = labeled_pts[:, 2:3]   # (N, 1)
+        obs_v   = labeled_pts[:, 3:4]
+        obs_p   = labeled_pts[:, 4:5]
 
-    bc_obs_u = dde.PointSetBC(obs_xy, obs_u, component=0)
-    bc_obs_v = dde.PointSetBC(obs_xy, obs_v, component=1)
-    bc_obs_p = dde.PointSetBC(obs_xy, obs_p, component=2)
+        bc_obs_u = dde.PointSetBC(obs_xy, obs_u, component=0)
+        bc_obs_v = dde.PointSetBC(obs_xy, obs_v, component=1)
+        bc_obs_p = dde.PointSetBC(obs_xy, obs_p, component=2)
+        
+        bcs.append(bc_obs_u)
+        bcs.append(bc_obs_v)
+        bcs.append(bc_obs_p)
     
-    bcs = [bc_inlet_u, bc_inlet_v, bc_wall_u, bc_wall_v, bc_outlet_p,
-           bc_obs_u, bc_obs_v, bc_obs_p]
 
     # Instantiate data object
     data = dde.data.PDE(
@@ -273,21 +322,23 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
     
     # Create callbacks
     resampler = dde.callbacks.PDEPointResampler(period=1000)   # RAR - resamples more training pts at difficult areas
+    reweighter = LossMagnitudeReweighter()
 
     # Train
     start_time = time.time()
     start_timestamp = datetime.datetime.now().isoformat()
     
     loss_history_1, train_state_1 = model.train(iterations=cfg.n_adam,
-                                                callbacks=[resampler],
+                                                callbacks=[resampler, reweighter],
                                                 display_every=1000,
                                                 model_save_path=model_prefix)
+    handoff_loss_weights = model.loss_weights   # pass to L-BFGS
     
     
     # SECOND TRAINING (L-BFGS)
     
     # Set params
-    model.compile("L-BFGS", loss_weights=cfg.loss_weights_lbfgs)
+    model.compile("L-BFGS", loss_weights=handoff_loss_weights)
     # dde.config.set_default_float("float64")       # causes MPS errors
     dde.optimizers.config.set_LBFGS_options(gtol=cfg.gtol_lbfgs,
                                             ftol=cfg.ftol_lbfgs,
@@ -295,7 +346,8 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
                                             maxfun=cfg.n_lbfgs * 10)
     
     # Train
-    loss_history_2, train_state_2 = model.train(display_every=1000,
+    loss_history_2, train_state_2 = model.train(callbacks=[resampler, reweighter],
+                                                display_every=1000,
                                                 model_save_path=model_prefix)
 
     end_time = time.time()
@@ -310,8 +362,9 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
                  issave=True, isplot=False, output_dir=pinn_dir)
     
     # Log labeled points
-    np.savetxt(os.path.join(pinn_dir, "labeled_points.csv"),
-               labeled_pts, delimiter=",")
+    if n_labeled > 0:
+        np.savetxt(os.path.join(pinn_dir, "labeled_points.csv"),
+                labeled_pts, delimiter=",")
     
     # Log training metadata
     metadata = {

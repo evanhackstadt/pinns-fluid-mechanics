@@ -28,7 +28,8 @@ from fem import solve_stenosis, fem_predict
 from pinn import build_model, train_model, restore_model, pinn_predict
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
-                      plot_output_heatmaps, plot_error_heatmaps)
+                      plot_output_heatmaps, plot_error_heatmaps,
+                      compare_runs_n)
 
 
 def parse_args():
@@ -121,12 +122,14 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
     else:
         model = restore_model(fem_data, cfg, a, b, n_labeled, model_prefix)
     
-    labeled_pts = np.loadtxt(os.path.join(dirs['pinn'], "labeled_points.csv"),
-                             delimiter=",")
-    loss_data = np.loadtxt(os.path.join(dirs['pinn'], "loss.dat"),
-                           delimiter=" ", comments="#")
 
     # --- Analysis ---    
+    loss_data   = np.loadtxt(os.path.join(dirs['pinn'], "loss.dat"),
+                             delimiter=" ", comments="#")
+    if n_labeled > 0:
+        labeled_pts = np.loadtxt(os.path.join(dirs['pinn'], "labeled_points.csv"),
+                                delimiter=",")
+    
     pinn_data = pinn_predict(model, query)
     errors    = compute_errors(pinn_data, fem_data)
     save_errors(errors, dirs['base'], tag)
@@ -185,6 +188,10 @@ def main():
     with open(summary_path, "w") as f:
         json.dump(all_errors, f, indent=2)
     print(f"\nSummary written to {summary_path}")
+    
+    # Global analysis
+    compare_dir = os.path.join(cfg.results_dir, "summary_plots/")
+    compare_runs_n(summary_path, compare_dir, fixed_ab=[0.4, 0.1])
 
 
 if __name__ == "__main__":
