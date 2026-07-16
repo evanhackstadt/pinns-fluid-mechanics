@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument("--n-adam",    type=int,   help="Adam iterations")
     parser.add_argument("--n-lbfgs",   type=int,   help="L-BFGS iterations")
     parser.add_argument("--mesh-size", type=float, help="FEM mesh element size")
+    parser.add_argument("--skip-mesh",  action="store_true",
+                        help="Skip mesh generation (use cached file)")
     parser.add_argument("--skip-fem",  action="store_true",
                         help="Skip FEM solve (use cached results)")
     parser.add_argument("--skip-pinn", action="store_true",
@@ -46,6 +48,8 @@ def parse_args():
                         help="Skip cases that appear complete based on existing outputs")
     parser.add_argument("--separate-plots", action="store_true",
                         help="Also save standalone output/error heatmaps per variable")
+    parser.add_argument("--fem-only", action="store_true",
+                        help="Run only the FEM simulations, skipping PINN and analysis/visualization completely.")
     return parser.parse_args()
 
 
@@ -76,7 +80,8 @@ def load_case_errors(cfg: StenosisConfig, a: float, b: float, n_labeled: int):
 
 # --- Train + Evaluate a single ellipse geometry ---
 def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
-             skip_fem: bool, skip_pinn: bool, separate_plots: bool):
+             skip_mesh: bool, skip_fem: bool, skip_pinn: bool, 
+             separate_plots: bool, fem_only: bool):
 
     cfg.make_dirs(a, b, n_labeled)
     dirs = cfg.case_dirs(a, b, n_labeled)
@@ -85,7 +90,10 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
 
     # --- Mesh ---
     msh_file = f"{cfg.meshes_dir}/stenosis_{tag}.msh"
-    create_stenosis_mesh(cfg, a, b, msh_file)
+    if not skip_mesh:
+        create_stenosis_mesh(cfg, a, b, msh_file)
+    else:
+        print(f"Skipping mesh, loading from {msh_file}")
 
     # --- FEM ground truth ---
     fem_file = f"{dirs['fem']}/solution.npz"
@@ -108,6 +116,10 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
         
     else:
         print(f"Skipping FEM, loading from {fem_file}")
+    
+    if fem_only:
+        print("FEM complete. Skipping PINN and analysis for this case.")
+        return None
 
     # Reload the ground truth regardless of skip
     fem_file = np.load(fem_file, allow_pickle=True)
@@ -124,18 +136,24 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
     
 
     # --- Analysis ---    
+    
+    # training / general
     loss_data   = np.loadtxt(os.path.join(dirs['pinn'], "loss.dat"),
                              delimiter=" ", comments="#")
     if n_labeled > 0:
         labeled_pts = np.loadtxt(os.path.join(dirs['pinn'], "labeled_points.csv"),
                                 delimiter=",")
+    else:
+        labeled_pts = None
     
-    pinn_data = pinn_predict(model, query)
-    errors    = compute_errors(pinn_data, fem_data)
-    save_errors(errors, dirs['base'], tag)
-
     plot_loss_curves(loss_data, dirs['plots'])
     plot_domain(cfg, a, b, dirs['plots'], labeled_pts)
+    
+    # model outputs
+    pinn_data = pinn_predict(model, query)
+    errors    = compute_errors(pinn_data, fem_data)
+    save_errors(errors, dirs['base'], a, b, n_labeled)
+
     plot_output_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
     plot_error_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
     print(f"\nAnalysis and Visualization complete.")
@@ -170,28 +188,33 @@ def main():
                 errors = load_case_errors(cfg, a, b, n)
             else:
                 errors = run_case(cfg, a, b, n,
+                                  skip_mesh=args.skip_mesh,
                                   skip_fem=args.skip_fem,
                                   skip_pinn=args.skip_pinn,
-                                  separate_plots=args.separate_plots)
+                                  separate_plots=args.separate_plots,
+                                  fem_only=args.fem_only)
 
             config_dict = cfg.config_as_dict(a,b,n)
             config_path = os.path.join(cfg.case_dirs(a,b,n)["base"], "config_log.json")
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f, indent=2)
 
-            all_errors[f"run{run_i}"] = errors
-            all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
-            run_i += 1
+            if not args.fem_only:
+                all_errors[f"run{run_i}"] = errors
+                all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
+                run_i += 1
 
-    # Summary across all cases
-    summary_path = os.path.join(cfg.results_dir, "summary.json")
-    with open(summary_path, "w") as f:
-        json.dump(all_errors, f, indent=2)
-    print(f"\nSummary written to {summary_path}")
-    
-    # Global analysis
-    compare_dir = os.path.join(cfg.results_dir, "summary_plots/")
-    compare_runs_n(summary_path, compare_dir, fixed_ab=[0.4, 0.1])
+    if not args.fem_only:
+        # Summary across all cases
+        summary_path = os.path.join(cfg.results_dir, "summary.json")
+        with open(summary_path, "w") as f:
+            json.dump(all_errors, f, indent=2)
+        print(f"\nSummary written to {summary_path}")
+        
+        # Global analysis
+        compare_dir = os.path.join(cfg.results_dir, "summary_plots/")
+        compare_runs_n(summary_path, compare_dir, fixed_ab=[0.4, 0.1])
+        print(f"\nGlobal visualization complete, saved to {compare_dir}")
 
 
 if __name__ == "__main__":
