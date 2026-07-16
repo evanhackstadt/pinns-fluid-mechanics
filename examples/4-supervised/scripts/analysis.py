@@ -13,9 +13,11 @@ import os
 import json
 
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.patches import Ellipse
+import seaborn as sns
 
 from geometry import ellipse_mask
 
@@ -74,7 +76,7 @@ def compute_errors(pinn_data, fem_data):
 
 
 # --- Save Errors as File ---
-def save_errors(errors, output_dir, tag):
+def save_errors(errors, output_dir, a, b, n):
     """
     Write the calculated errors to a json file.
     Args:
@@ -84,7 +86,7 @@ def save_errors(errors, output_dir, tag):
     """
     
     error_path = os.path.join(output_dir, f"errors.json")
-    errors["parameters"] = tag
+    errors["parameters"] = {"a": a, "b": b, "n": n}
     
     with open(error_path, "w", encoding="utf-8") as f:
         json.dump(errors, f, indent=2)
@@ -126,9 +128,10 @@ def plot_loss_curves(loss_data, output_dir):
         bc_w_u   = loss[:, 5]
         bc_w_v   = loss[:, 6]
         bc_o_p   = loss[:, 7]
-        bc_obs_u = loss[:, 8]
-        bc_obs_v = loss[:, 9]
-        bc_obs_p = loss[:, 10]
+        if n_terms == 11:
+            bc_obs_u = loss[:, 8]
+            bc_obs_v = loss[:, 9]
+            bc_obs_p = loss[:, 10]
 
         fig, ax = plt.subplots(figsize=(10, 7), dpi=FIG_DPI)
 
@@ -140,9 +143,10 @@ def plot_loss_curves(loss_data, output_dir):
         ax.semilogy(steps, bc_w_u,   color="#00ff00", lw=1.5, label="BC (wall $u$)")
         ax.semilogy(steps, bc_w_v,   color="#008000", lw=1.5, label="BC (wall $v$)")
         ax.semilogy(steps, bc_o_p,   color="#2f4f4f", lw=1.5, label="BC (outlet $p$)")
-        ax.semilogy(steps, bc_obs_u, color="#f4a460", lw=1.5, label="BC (observed $u$)")
-        ax.semilogy(steps, bc_obs_v, color="#ff69b4", lw=1.5, label="BC (observed $v$)")
-        ax.semilogy(steps, bc_obs_p, color="#ff00ff", lw=1.5, label="BC (observed $p$)")
+        if n_terms == 11:
+            ax.semilogy(steps, bc_obs_u, color="#f4a460", lw=1.5, label="BC (observed $u$)")
+            ax.semilogy(steps, bc_obs_v, color="#ff69b4", lw=1.5, label="BC (observed $v$)")
+            ax.semilogy(steps, bc_obs_p, color="#ff00ff", lw=1.5, label="BC (observed $p$)")
     
         ax.set_xlabel("Training iteration")
         ax.set_ylabel("Loss (log scale)")
@@ -158,7 +162,9 @@ def plot_loss_curves(loss_data, output_dir):
         
         # Also save summarized PDE and BC curves
         pde_total = pde_cont + pde_x_m + pde_y_m
-        bc_total = bc_i_u + bc_i_v + bc_w_u + bc_w_v + bc_o_p + bc_obs_u + bc_obs_v + bc_obs_p
+        bc_total = bc_i_u + bc_i_v + bc_w_u + bc_w_v + bc_o_p
+        if n_terms == 11:
+            bc_total += bc_obs_u + bc_obs_v + bc_obs_p
 
         fig, ax = plt.subplots(figsize=(7, 4), dpi=FIG_DPI)
         
@@ -315,7 +321,8 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
     for i, (model, data) in enumerate(models.items()):
         for j, var in enumerate(variables):
             
-            cbar_cap = True if model == "FEM" else False
+            # cbar_cap = True if model == "FEM" else False
+            cbar_cap = False
             
             values = data[:, j+2]
             axes[i, j] = plot_heatmap_single(axes[i, j], X, Y, values, CMAP_VAR, cfg, a, b,
@@ -424,18 +431,139 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
 
 # ———————————— ACROSS-RUNS ANALYSIS ————————————
 
-def compare_runs_n(summary_path, fixed_a=None, fixed_b=None, metric=["all"]):
+def compare_runs(summary_path, output_dir, parameter, 
+                   fixed_ab: list = None, fixed_n = None):
     """
     Create point plots of error across different values of n, for variables u,v,p and total MSE.
     Args:
         summary_path: path to summary.json containing errors across runs
-        fixed_a: specified value of a to fix across n. If None, will average errors across all a
-        fixed_b: specified value of a to fix across n. If None, will average errors across all b
-        metric: optionally specify a list of error metric(s) (e.g. L2, L_inf, MSE) to plot. If None, will plot all.
+        output_dir: path to folder to save plots
+        axis: string specifying the parameter of interest, choices = ["n", "a", "b", "ab"]
+        fixed_ab: specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
+        fixed_n:  specified value of n to use across (a,b); discards other n. If None, takes average errors across all n. Requires variable!="n".
     """
+    print(f"CALL param={parameter}, fixed_ab={fixed_ab}, fixed_n={fixed_n}")
     
-    errors = json.load(summary_path)
+    # Parse args
+    parameter_choices = ["n", "a", "b", "ab"]
+    if parameter not in parameter_choices:
+        raise ValueError(f"Received parameter = {parameter}, but must be one of {parameter_choices}")
+    if fixed_ab and len(fixed_ab) != 2:
+        raise ValueError(f"fixed_ab must be a list of length 2; received {fixed_ab}.")
+    if parameter == "n":
+        if fixed_n is not None:
+            raise ValueError(f"fixed_n is not compatible with parameter={parameter}.")
+    if parameter != "n":
+        if fixed_ab is not None:
+            raise ValueError(f"fixed_ab is not compatible with parameter={parameter}.")
     
-    # extract 
+    # Load data
+    with open(summary_path) as f:
+        errors = json.load(f)    # [run_][u/v/p/total/parameters][attribute]
     
-    return
+    METRICS = ["L2", "L_inf", "MSE"]
+    VARS = ["u", "v", "p"]
+    
+    selected = {}
+    
+    # Select runs based on fixed_var, otherwise average across all cases of each parameter value
+    for data in errors.values():
+        # data = {"u"={...}, ..., "total"={}, "parameters"={}}
+        a = data["parameters"]["a"]
+        b = data["parameters"]["b"]
+        n = data["parameters"]["n"]
+        param_keys = {"n": n, "a": a, "b": b, "ab": f"({a}, {b})"}
+        param_key = param_keys[parameter]
+        print(f"param_key: {parameter}={param_key}")
+        
+        if fixed_ab is not None:
+            if a == fixed_ab[0] and b == fixed_ab[1]:
+                print(f"selected a,b={a},{b}")
+                data.pop("parameters")
+                selected[param_key] = data
+                continue
+            else:
+                continue
+        
+        elif fixed_n is not None:
+            if n == fixed_n:
+                print(f"selected n={n}")
+                data.pop("parameters")
+                selected[param_key] = data
+                continue
+            else:
+                continue
+        
+        else:
+            for data in errors.values():
+                # Initialize selected[param_key] if it doesn't exist
+                if param_key not in selected:
+                    selected[param_key] = {var: {met: [] for met in METRICS} for var in VARS}
+                    selected[param_key]["total"] = {"MSE": []}
+                
+                # Collect errors across (a,b) in lists
+                for var in VARS:
+                    for met in METRICS:
+                        selected[param_key][var][met].append(data[var][met])
+                selected[param_key]["total"]["MSE"].append(data["total"]["MSE"])
+            
+            # Now average collected values
+            for param_key in selected:
+                for var in VARS:
+                    for met in METRICS:
+                        selected[param_key][var][met] = np.mean(selected[param_key][var][met])
+                selected[param_key]["total"]["MSE"] = np.mean(selected[param_key]["total"]["MSE"])
+    
+    # Prepare plot data
+    PARAMETER_LABELS = {
+        "n": "number of labeled training points",
+        "a": "ellipse width (a)",
+        "b": "ellipse height (b)",
+        "ab": "ellipse geometry (a, b)"
+    }
+    
+    total_mses = pd.DataFrame(columns=[parameter, 'mse'])     # store for separate plot
+    
+    for metric in METRICS:
+        
+        plot_data = pd.DataFrame(columns=[parameter, 'variable', 'error'])
+        
+        for param_key, data in selected.items():
+            # keys = parameter values; vals = {'u': {}, ...}            
+            total_mse = data["total"]["MSE"]
+            total_mses.loc[len(total_mses)] = [param_key, total_mse]
+            for var in VARS:
+                error = data[var][metric]
+                plot_data.loc[len(plot_data)] = [param_key, var, error]
+        
+        # Plot metric
+        ax = sns.pointplot(plot_data, x=parameter, y='error', hue='variable')
+        plt.xlabel(PARAMETER_LABELS[parameter])
+        plt.ylabel(metric)
+        
+        title = f"{metric} error across {parameter}"
+        if fixed_n:
+            title += f", (where n={fixed_n})"
+        elif fixed_ab:
+            title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
+        else:
+            averaged_across = "ab" if parameter == "n" else "n"
+            title += f", averaged across {averaged_across}"
+            
+        plt.title(title)
+        plt.tight_layout()
+        
+        fname = os.path.join(output_dir, f"errors_by_{parameter}_{metric}.png")
+        ax.figure.savefig(fname, dpi=FIG_DPI)
+        plt.close(ax.figure)
+    
+    # Also plot total MSE
+    ax = sns.pointplot(total_mses, x=parameter, y='mse')
+    plt.xlabel(PARAMETER_LABELS[parameter])
+    plt.ylabel("Total MSE")
+    plt.title(f"Total MSE of all outputs, across {parameter}")
+    plt.tight_layout()
+    
+    fname = os.path.join(output_dir, f"errors_by_{parameter}_MSE_total.png")
+    ax.figure.savefig(fname, dpi=FIG_DPI)
+    plt.close(ax.figure)
