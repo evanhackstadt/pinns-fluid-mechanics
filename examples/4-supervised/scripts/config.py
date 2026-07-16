@@ -2,9 +2,8 @@
 
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Tuple
-import os
-import json
 
 
 @dataclass
@@ -21,7 +20,7 @@ class StenosisConfig:
     # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
     cases: List[Tuple[float, float]] = field(
         default_factory=lambda: [(0.4, 0.1),    # wide and shallow, easy
-                                 (0.4, 0.4)     # wide and deeper, hard
+                                #  (0.4, 0.4)     # wide and deeper, hard
                                  ]
     )
     
@@ -41,15 +40,15 @@ class StenosisConfig:
     n_test: int = 500      # default 2000, can tune. Sampled from both interior & boundary.
     n_labeled: List[int] = field(
         # try different N of labeled data.
-        default_factory=lambda: [0, 3, 5, 10, 25]
+        default_factory=lambda: [0, 3, 5, 10, 25, 100, 250]
     )
     
-    layers: List[int] = field(default_factory=lambda: [3, 64, 64, 64, 3])     # (x,y,h)->...->(u,v,p)
+    layers: List[int] = field(default_factory=lambda: [3, 128, 128, 3])     # (x,y,h)->...->(u,v,p)
     
     # adam
     n_adam: int = 15000         # train for N iterations with Adam
     lr: float = 1e-3            # Adam learning rate
-    loss_weights_adam: List[float] = field(
+    loss_weights_adam: List[float] = field(     # will be reweighted dynamically during training
         default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
                                  5, 5,          # bc_inlet_u, bc_inlet_v
                                  50, 50,        # bc_wall_u, bc_wall_v  <-- important hard constraints
@@ -82,40 +81,46 @@ class StenosisConfig:
                 fem/
                 pinn/
                 plots/
-            ...
+            ...more cases...
+            summary_plots/
+            summary.json
     '''
     
-    base_dir: str = "/Users/evan/Documents/GitHub/pinns-fluid-mechanics/examples/4-supervised/"
+    base_dir: Path = Path(__file__).resolve().parents[1]
     
     @property
-    def meshes_dir(self):
-        return os.path.join(self.base_dir, "meshes")
+    def meshes_dir(self) -> Path:
+        return self.base_dir / "meshes"
 
     @property
-    def results_dir(self):
-        return os.path.join(self.base_dir, "results")
+    def results_dir(self) -> Path:
+        return self.base_dir / "results"
 
     def case_tag(self, a, b, n):
         return f"n{n}_a{a:.2f}_b{b:.2f}"
 
     def case_dirs(self, a, b, n):
         tag = self.case_tag(a, b, n)
-        base = os.path.join(self.results_dir, tag)
+        base = self.results_dir / tag
+        summary = self.results_dir / "summary_plots"
         return {
             "base":   base,
-            "fem":    os.path.join(base, "fem"),
-            "pinn":   os.path.join(base, "pinn"),
-            "plots":  os.path.join(base, "plots"),
+            "fem":    base / "fem",
+            "pinn":   base / "pinn",
+            "plots":  base / "plots",
+            "summary_plots": summary
         }
 
     def make_dirs(self, a, b, n):
         for d in self.case_dirs(a, b, n).values():
-            os.makedirs(d, exist_ok=True)
+            d.mkdir(parents=True, exist_ok=True)
     
     def clear_pinn(self, a, b, n):
         target = self.case_dirs(a, b, n)["pinn"]
-        for f in os.listdir(target):
-            os.remove(os.path.join(target, f))
+        target.mkdir(parents=True, exist_ok=True)
+        for f in target.iterdir():
+            if f.is_file():
+                f.unlink()
     
     def config_as_dict(self, a=None, b=None, n=None):
         return {

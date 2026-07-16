@@ -10,11 +10,9 @@ Rugonyi Lab
 """
 
 
-import os
-import re
 import json
 import time, datetime
-import glob
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -356,14 +354,14 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
     
     
     # Log results
-    pinn_dir = cfg.case_dirs(a, b, n_labeled)["pinn"]
+    pinn_dir = Path(cfg.case_dirs(a, b, n_labeled)["pinn"])
     
     dde.saveplot(loss_history_2, train_state_2, 
-                 issave=True, isplot=False, output_dir=pinn_dir)
+                 issave=True, isplot=False, output_dir=str(pinn_dir))
     
     # Log labeled points
     if n_labeled > 0:
-        np.savetxt(os.path.join(pinn_dir, "labeled_points.csv"),
+        np.savetxt(pinn_dir / "labeled_points.csv",
                 labeled_pts, delimiter=",")
     
     # Log training metadata
@@ -380,9 +378,9 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
             "total_steps": len(getattr(loss_history_2, "steps", [])),
         }
     
-    metadata_path = os.path.join(pinn_dir, "training_log.json")
+    metadata_path = pinn_dir / "training_log.json"
 
-    with open(metadata_path, "w", encoding="utf-8") as f:
+    with metadata_path.open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
     
     
@@ -412,8 +410,9 @@ def restore_model(fem_data, cfg, a, b, n_labeled, model_prefix):
     model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_adam)
 
     # Find the latest saved checkpoint
-    checkpoints = glob.glob(f"{model_prefix}-*.pt")
-    latest = max(checkpoints, key=lambda f: int(f.split("-")[-1].split(".")[0]))
+    model_prefix = Path(model_prefix)
+    checkpoints = list(model_prefix.parent.glob(f"{model_prefix.name}-*.pt"))
+    latest = max(checkpoints, key=lambda p: int(p.stem.split("-")[-1]))
     
     # Manually load only the network weights
     # DeepXDE model.restore() loads optimizer state, causing errors

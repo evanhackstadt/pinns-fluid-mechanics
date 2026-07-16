@@ -9,8 +9,8 @@ Rugonyi Lab
 """
 
 
-import os
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -85,10 +85,11 @@ def save_errors(errors, output_dir, a, b, n):
         tag: string noting a, b, and Re parameters of the run
     """
     
-    error_path = os.path.join(output_dir, f"errors.json")
+    output_dir = Path(output_dir)
+    error_path = output_dir / "errors.json"
     errors["parameters"] = {"a": a, "b": b, "n": n}
     
-    with open(error_path, "w", encoding="utf-8") as f:
+    with error_path.open("w", encoding="utf-8") as f:
         json.dump(errors, f, indent=2)
 
 
@@ -106,6 +107,9 @@ def plot_loss_curves(loss_data, output_dir):
         #   BC_inlet_u, BC_inlet_v, BC_wall_u, BC_wall_v, BC_outlet_p,
         #   BC_data_observed_u, BC_data_observed_v, BC_data_observed_p
     
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     n_terms = int((loss_data.shape[1] - 1) / 2)
     print(f"Extracting {n_terms} loss terms")
     
@@ -156,7 +160,7 @@ def plot_loss_curves(loss_data, output_dir):
         ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
     
         plt.tight_layout()
-        fname = os.path.join(output_dir, f"loss_curves_terms_{label}.png")
+        fname = output_dir / f"loss_curves_terms_{label}.png"
         plt.savefig(fname, dpi=FIG_DPI)
         plt.close()
         
@@ -179,7 +183,7 @@ def plot_loss_curves(loss_data, output_dir):
         ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
     
         plt.tight_layout()
-        fname = os.path.join(output_dir, f"loss_curves_summed_{label}.png")
+        fname = output_dir / f"loss_curves_summed_{label}.png"
         plt.savefig(fname, dpi=FIG_DPI)
         plt.close()
         
@@ -216,8 +220,11 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts=None):
         plt.scatter(labeled_pts[:, 0], labeled_pts[:, 1], s=30, c='green')
         plt.title(f"Domain with n={labeled_pts.shape[0]} measurements (green)")
     
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # save plot
-    plt.savefig(os.path.join(output_dir, f"geometry.png"), dpi=FIG_DPI)
+    plt.savefig(output_dir / "geometry.png", dpi=FIG_DPI)
     plt.close()
 
 
@@ -336,12 +343,12 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
                 plot_heatmap_single(ax_sep, X, Y, values, CMAP_VAR, cfg, a, b,
                                     cbar_label=f"${var}$",
                                     title=f"{model} ${var}(x, y)$")
-                fname = os.path.join(output_dir, f"output_{model}_{var}_{tag}.png")
+                fname = output_dir / f"output_{model}_{var}_{tag}.png"
                 fig_sep.savefig(fname, dpi=FIG_DPI)
                 plt.close(fig_sep)
         
     # save multiplot
-    fname = os.path.join(output_dir, f"outputs_{tag}.png")
+    fname = output_dir / f"outputs_{tag}.png"
     fig.savefig(fname, dpi=FIG_DPI)
     plt.close(fig)
 
@@ -398,7 +405,7 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
                                 cbar_math_format=True,
                                 cbar_label="|error|",
                                 title=f"Absolute error of ${var}(x,y)$")
-            fname = os.path.join(output_dir, f"error_{var}_{tag}.png")
+            fname = output_dir / f"error_{var}_{tag}.png"
             fig_sep.savefig(fname, dpi=FIG_DPI)
             plt.close(fig_sep)
     
@@ -416,12 +423,12 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
                             cbar_math_format=True,
                             cbar_label="|error|",
                             title="Total absolute error across variables")
-        fname = os.path.join(output_dir, f"error_total_{tag}.png")
+        fname = output_dir / f"error_total_{tag}.png"
         fig_sep.savefig(fname, dpi=FIG_DPI)
         plt.close(fig_sep)
         
     # save multiplot
-    fname = os.path.join(output_dir, f"errors_{tag}.png")
+    fname = output_dir / f"errors_{tag}.png"
     fig.savefig(fname, dpi=FIG_DPI)
     plt.close(fig)
 
@@ -442,6 +449,9 @@ def compare_runs(summary_path, output_dir, parameter,
         fixed_ab: specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
         fixed_n:  specified value of n to use across (a,b); discards other n. If None, takes average errors across all n. Requires variable!="n".
     """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"CALL param={parameter}, fixed_ab={fixed_ab}, fixed_n={fixed_n}")
     
     # Parse args
@@ -458,7 +468,8 @@ def compare_runs(summary_path, output_dir, parameter,
             raise ValueError(f"fixed_ab is not compatible with parameter={parameter}.")
     
     # Load data
-    with open(summary_path) as f:
+    summary_path = Path(summary_path)
+    with summary_path.open() as f:
         errors = json.load(f)    # [run_][u/v/p/total/parameters][attribute]
     
     METRICS = ["L2", "L_inf", "MSE"]
@@ -553,7 +564,7 @@ def compare_runs(summary_path, output_dir, parameter,
         plt.title(title)
         plt.tight_layout()
         
-        fname = os.path.join(output_dir, f"errors_by_{parameter}_{metric}.png")
+        fname = output_dir / f"errors_by_{parameter}_{metric}.png"
         ax.figure.savefig(fname, dpi=FIG_DPI)
         plt.close(ax.figure)
     
@@ -564,6 +575,6 @@ def compare_runs(summary_path, output_dir, parameter,
     plt.title(f"Total MSE of all outputs, across {parameter}")
     plt.tight_layout()
     
-    fname = os.path.join(output_dir, f"errors_by_{parameter}_MSE_total.png")
+    fname = output_dir / f"errors_by_{parameter}_MSE_total.png"
     ax.figure.savefig(fname, dpi=FIG_DPI)
     plt.close(ax.figure)

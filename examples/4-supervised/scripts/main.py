@@ -12,11 +12,9 @@ Rugonyi Lab
 #       rather it can just run multiple independently
 
 
-import os
-import re
-import json, yaml
-import time, datetime
+import json
 import argparse
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -55,22 +53,22 @@ def parse_args():
 
 def case_complete(cfg: StenosisConfig, a: float, b: float, n_labeled: int):
     dirs = cfg.case_dirs(a, b, n_labeled)
-    error_path = os.path.join(dirs['base'], "errors.json")
+    error_path = dirs['base'] / "errors.json"
     plot_dir = dirs['plots']
 
-    if os.path.isfile(error_path):
+    if error_path.is_file():
         return True
-    if os.path.isdir(plot_dir):
-        for fname in os.listdir(plot_dir):
-            if os.path.isfile(os.path.join(plot_dir, fname)):
+    if plot_dir.is_dir():
+        for fname in plot_dir.iterdir():
+            if fname.is_file():
                 return True
     return False
 
 
 def load_case_errors(cfg: StenosisConfig, a: float, b: float, n_labeled: int):
-    error_path = os.path.join(cfg.case_dirs(a, b, n_labeled)['base'], "errors.json")
-    if os.path.isfile(error_path):
-        with open(error_path, "r", encoding="utf-8") as f:
+    error_path = cfg.case_dirs(a, b, n_labeled)['base'] / "errors.json"
+    if error_path.is_file():
+        with error_path.open("r", encoding="utf-8") as f:
             return json.load(f)
     return {
         "status": "skipped",
@@ -89,14 +87,14 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
     print(f"\n{'='*60}\nCase: {tag}\n{'='*60}")
 
     # --- Mesh ---
-    msh_file = f"{cfg.meshes_dir}/stenosis_{tag}.msh"
+    msh_file = cfg.meshes_dir / f"stenosis_{tag}.msh"
     if not skip_mesh:
         create_stenosis_mesh(cfg, a, b, msh_file)
     else:
         print(f"Skipping mesh, loading from {msh_file}")
 
     # --- FEM ground truth ---
-    fem_file = f"{dirs['fem']}/solution.npz"
+    fem_file = dirs['fem'] / "solution.npz"
     if not skip_fem:
         
         msh, u_sol, p_sol = solve_stenosis(cfg, msh_file)
@@ -127,7 +125,7 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
     query    = fem_data[:, 0:2]
 
     # --- PINN ---
-    model_prefix = f"{dirs['pinn']}/model"
+    model_prefix = dirs['pinn'] / "model"
     if not skip_pinn:
         cfg.clear_pinn(a, b, n_labeled)    # clear old models
         model = train_model(fem_data, cfg, a, b, n_labeled, model_prefix)
@@ -138,10 +136,10 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
     # --- Analysis ---    
     
     # training / general
-    loss_data   = np.loadtxt(os.path.join(dirs['pinn'], "loss.dat"),
+    loss_data   = np.loadtxt(dirs['pinn'] / "loss.dat",
                              delimiter=" ", comments="#")
     if n_labeled > 0:
-        labeled_pts = np.loadtxt(os.path.join(dirs['pinn'], "labeled_points.csv"),
+        labeled_pts = np.loadtxt(dirs['pinn'] / "labeled_points.csv",
                                 delimiter=",")
     else:
         labeled_pts = None
@@ -176,8 +174,8 @@ def main():
     if args.mesh_size:
         cfg.mesh_size = args.mesh_size
 
-    os.makedirs(cfg.meshes_dir, exist_ok=True)
-    os.makedirs(cfg.results_dir, exist_ok=True)
+    cfg.meshes_dir.mkdir(parents=True, exist_ok=True)
+    cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
     all_errors = {}
     run_i = 1
@@ -195,8 +193,8 @@ def main():
                                   fem_only=args.fem_only)
 
             config_dict = cfg.config_as_dict(a,b,n)
-            config_path = os.path.join(cfg.case_dirs(a,b,n)["base"], "config_log.json")
-            with open(config_path, "w", encoding="utf-8") as f:
+            config_path = cfg.case_dirs(a,b,n)["base"] / "config_log.json"
+            with config_path.open("w", encoding="utf-8") as f:
                 json.dump(config_dict, f, indent=2)
 
             if not args.fem_only:
@@ -206,13 +204,13 @@ def main():
 
     if not args.fem_only:
         # Summary across all cases
-        summary_path = os.path.join(cfg.results_dir, "summary.json")
-        with open(summary_path, "w") as f:
+        summary_path = cfg.results_dir / "summary.json"
+        with summary_path.open("w") as f:
             json.dump(all_errors, f, indent=2)
         print(f"\nSummary written to {summary_path}")
         
         # Global analysis
-        compare_dir = os.path.join(cfg.results_dir, "summary_plots/")
+        compare_dir = cfg.results_dir / "summary_plots"
         compare_runs(summary_path, compare_dir, "n", fixed_ab=[0.4, 0.1])
         compare_runs(summary_path, compare_dir, "ab", fixed_n=25)
         print(f"\nGlobal visualization complete, saved to {compare_dir}")
