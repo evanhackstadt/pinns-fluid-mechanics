@@ -72,7 +72,7 @@ def build_labeled_sequence(fem_data, n_max, cfg, uniform_frac=0.3):
     """
     if n_max <= 0:
         assert f"n_max = {n_max} (must be > 0)"
-    
+
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
 
@@ -228,8 +228,12 @@ def build_model(labeled_pts, cfg, a, b, n_labeled):
     set_global_constants(cfg, a, b)
     
     # Construct the geometry: base channel rectangle - obstructing ellipse
+    # DeepXDE requires a>b, so if a<b, swap them and rotate 90°
     channel = dde.geometry.Rectangle([-cfg.L/2, 0], [cfg.L/2, cfg.H_max])
-    obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], a, b)
+    if a < b:
+        obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], b, a, np.deg2rad(90))
+    else:
+        obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], a, b)
     geometry = dde.geometry.CSGDifference(channel, obstruction)
 
     # Define the boundary conditions
