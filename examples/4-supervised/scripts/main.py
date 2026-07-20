@@ -27,7 +27,7 @@ from pinn import build_model, train_model, restore_model, pinn_predict
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
                       plot_output_heatmaps, plot_error_heatmaps,
-                      compare_runs)
+                      plot_error_comparison, plot_error_comparison_2d)
 
 
 def parse_args():
@@ -177,9 +177,14 @@ def main():
     cfg.meshes_dir.mkdir(parents=True, exist_ok=True)
     cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
+    cases_print = [[n, (a, b)] for n in cfg.n_labeled for (a, b) in cfg.geometries]
+    print(f"Execution Plan:")
+    for case in cases_print:
+        print(f"n={case[0]}, (a,b)={case[1]}")
+    
     all_errors = {}
     run_i = 1
-    for (a, b) in cfg.cases:
+    for (a, b) in cfg.geometries:
         for n in cfg.n_labeled:
             if args.skip_complete and case_complete(cfg, a, b, n):
                 print(f"Skipping complete case: {cfg.case_tag(a, b, n)}")
@@ -204,16 +209,20 @@ def main():
 
     if not args.fem_only:
         # Summary across all cases
-        summary_path = cfg.results_dir / "summary.json"
+        cfg.summary_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = cfg.summary_dir / "summary.json"
         with summary_path.open("w") as f:
             json.dump(all_errors, f, indent=2)
         print(f"\nSummary written to {summary_path}")
         
         # Global analysis
-        compare_dir = cfg.results_dir / "summary_plots"
-        compare_runs(summary_path, compare_dir, "n", fixed_ab=[0.4, 0.1])
-        compare_runs(summary_path, compare_dir, "ab", fixed_n=25)
-        print(f"\nGlobal visualization complete, saved to {compare_dir}")
+        compare_dir = cfg.summary_dir / "summary_plots"
+        
+        plot_error_comparison(summary_path, compare_dir, "n", fixed_ab=None)    # average across (a,b)
+        plot_error_comparison(summary_path, compare_dir, "ab", fixed_n=None)    # average across n
+        plot_error_comparison_2d(summary_path, compare_dir, "n", "ab")
+        
+        print(f"\nGlobal visualization complete, saved to {cfg.summary_dir / "summary_plots"}")
 
 
 if __name__ == "__main__":

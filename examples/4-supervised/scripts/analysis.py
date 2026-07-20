@@ -22,10 +22,31 @@ import seaborn as sns
 from geometry import ellipse_mask
 
 
+PALETTE_DEEP = sns.color_palette("deep").as_hex()
 CMAP_VAR   = "rainbow"
-CMAP_ERR   = "hot_r"
-COLOR_PINN = "#185FA5"   # blue  – PINN prediction
-COLOR_TRUE = "#E8593C"   # coral – analytical ground truth
+CMAP_ERR   = "flare"
+COLOR_PINN = PALETTE_DEEP[0]   # blue  – PINN prediction
+COLOR_U    = PALETTE_DEEP[1]
+COLOR_TRUE = PALETTE_DEEP[2]   # warm accent – analytical ground truth
+COLOR_V    = PALETTE_DEEP[3]
+COLOR_P    = PALETTE_DEEP[4]
+COLOR_AGGREGATE = PALETTE_DEEP[5]
+COLOR_PDE   = PALETTE_DEEP[6]
+COLOR_BC    = PALETTE_DEEP[7]
+COLOR_VARIABLE_MAP = {"u": COLOR_U, "v": COLOR_V, "p": COLOR_P}
+LOSS_COLORS = {
+    "PDE_continuity": PALETTE_DEEP[0],
+    "PDE_x_momentum": PALETTE_DEEP[1],
+    "PDE_y_momentum": PALETTE_DEEP[2],
+    "BC_inlet_u": PALETTE_DEEP[3],
+    "BC_inlet_v": PALETTE_DEEP[4],
+    "BC_wall_u": PALETTE_DEEP[5],
+    "BC_wall_v": PALETTE_DEEP[6],
+    "BC_outlet_p": PALETTE_DEEP[7],
+    "BC_observed_u": PALETTE_DEEP[8],
+    "BC_observed_v": PALETTE_DEEP[9],
+    "BC_observed_p": "#8A2BE2",
+}
 FIG_DPI    = 200
 
 
@@ -42,9 +63,10 @@ def compute_errors(pinn_data, fem_data):
         errors: dict containing L2, L_inf, and MSE for u, v, p, and total
     """
     
+    VARS = ['u', 'v', 'p']
     errors = {}
     
-    for i, variable in enumerate(['u', 'v', 'p']):
+    for i, variable in enumerate(VARS):
         # ensure coordinate alignment
         pinn_xy = pinn_data[:, 0:2]
         fem_xy  =  fem_data[:, 0:2]
@@ -58,19 +80,17 @@ def compute_errors(pinn_data, fem_data):
         diff   = pred - true
         l2_rel = np.linalg.norm(diff) / np.linalg.norm(true)
         l_inf  = np.max(np.abs(diff))
-        mse    = np.square(np.subtract(true, pred)).mean()
         # store
         errors[variable] = {
             "L2": l2_rel,
             "L_inf": l_inf,
-            "MSE": mse
         }
     
-    # store total error across variables
-    for metric in ["L2", "L_inf", "MSE"]:
-        total = errors["u"][metric] + errors["v"][metric] + errors["p"][metric]
-        errors["total"] = {}
-        errors["total"][metric] = total
+    # store aggregated error across variables (mean L2, max L_inf)
+    mean_L2 = np.mean([errors[var]["L2"] for var in VARS])
+    max_L_inf = np.max([errors[var]["L_inf"] for var in VARS])
+    errors["aggregate"] = {"mean_L2": mean_L2, 
+                           "max_L_inf": max_L_inf}
     
     return errors
 
@@ -82,7 +102,9 @@ def save_errors(errors, output_dir, a, b, n):
     Args:
         errors (dict): output of compute_errors() containing L2, L_inf, and MSE
         output_dir: path to the folder to save the file
-        tag: string noting a, b, and Re parameters of the run
+        a: ellipse semimajor (half width)
+        b: ellipse semiminor (half height)
+        n: number of labeled points used for supervised training
     """
     
     output_dir = Path(output_dir)
@@ -139,6 +161,7 @@ def plot_loss_curves(loss_data, output_dir):
 
         fig, ax = plt.subplots(figsize=(10, 7), dpi=FIG_DPI)
 
+        # use visually-distinct colors: https://mokole.com/palette.html
         ax.semilogy(steps, pde_cont, color="#00008b", lw=1.5, label="PDE (continuity)")
         ax.semilogy(steps, pde_x_m,  color="#1e90ff", lw=1.5, label="PDE (x-momentum)")
         ax.semilogy(steps, pde_y_m,  color="#00ffff", lw=1.5, label="PDE (y-momentum)")
@@ -201,7 +224,7 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts=None):
         labeled_pts: array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
     """
     # create box
-    fig, ax = plt.subplots(figsize=(9, 6), dpi=FIG_DPI)
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=FIG_DPI)
     plt.xlim(-cfg.L/2, cfg.L/2)
     plt.ylim(0, cfg.H_max)
     plt.xlabel("$x$")
@@ -217,14 +240,14 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts=None):
     
     # add points used for supervised learning
     if labeled_pts is not None:
-        plt.scatter(labeled_pts[:, 0], labeled_pts[:, 1], s=30, c='green')
+        plt.scatter(labeled_pts[:, 0], labeled_pts[:, 1], s=25, c=COLOR_TRUE)
         plt.title(f"Domain with n={labeled_pts.shape[0]} measurements (green)")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # save plot
-    plt.savefig(output_dir / "geometry.png", dpi=FIG_DPI)
+    plt.savefig(output_dir / "domain.png", dpi=FIG_DPI)
     plt.close()
 
 
@@ -251,7 +274,7 @@ def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
 
 
 # --- Helper: Plot One Heatmap ---
-def plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
+def _plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
                         cbar_math_format=False, cbar_cap=False,
                         cbar_label=None, title=None):
     
@@ -332,17 +355,17 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
             cbar_cap = False
             
             values = data[:, j+2]
-            axes[i, j] = plot_heatmap_single(axes[i, j], X, Y, values, CMAP_VAR, cfg, a, b,
-                                             cbar_cap=cbar_cap,
-                                             cbar_label=f"${var}$",
-                                             title=f"{model} ${var}(x, y)$")
+            axes[i, j] = _plot_heatmap_single(axes[i, j], X, Y, values, CMAP_VAR, cfg, a, b,
+                                              cbar_cap=cbar_cap,
+                                              cbar_label=f"${var}$",
+                                              title=f"{model} ${var}(x, y)$")
             
             # if saving plots separately
             if separate_plots:
                 fig_sep, ax_sep = plt.subplots(figsize=(6, 3), dpi=FIG_DPI, constrained_layout=True)
-                plot_heatmap_single(ax_sep, X, Y, values, CMAP_VAR, cfg, a, b,
-                                    cbar_label=f"${var}$",
-                                    title=f"{model} ${var}(x, y)$")
+                _plot_heatmap_single(ax_sep, X, Y, values, CMAP_VAR, cfg, a, b,
+                                     cbar_label=f"${var}$",
+                                     title=f"{model} ${var}(x, y)$")
                 fname = output_dir / f"output_{model}_{var}_{tag}.png"
                 fig_sep.savefig(fname, dpi=FIG_DPI)
                 plt.close(fig_sep)
@@ -357,7 +380,7 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
 def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
                         a=None, b=None, separate_plots=False):
     """
-    Create a multiplot figure showing an error heatmap for each output.
+    Create a multiplot figure showing an error heatmap for each variable, as well as mean L2 across variables.
     Args:
         pinn_data: array of shape (N, 5) with columns = [x, y, u_pinn, v_pinn, p_pinn]
         fem_data:  array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
@@ -382,7 +405,7 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
         "v": [1, 0],
         "p": [0, 1]
     }
-    total_err = np.zeros(shape=(pinn_data.shape[0],), dtype=float)
+    mean_err = np.zeros(shape=(pinn_data.shape[0],), dtype=float)
     
     fig, axes = plt.subplots(2, 2, figsize=(12, 6), dpi=FIG_DPI, constrained_layout=True)
 
@@ -392,38 +415,39 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
         
         # get vals and plot
         err = np.abs(pinn_data[:, i+2] - fem_data[:, i+2])
-        total_err += err
-        axes[a_i, a_j] = plot_heatmap_single(axes[a_i, a_j], X, Y, err, CMAP_ERR, cfg, a, b,
-                                             cbar_math_format=True,
-                                             cbar_label="|error|",
-                                             title=f"Absolute error of ${var}(x,y)$")
+        mean_err += err
+        axes[a_i, a_j] = _plot_heatmap_single(axes[a_i, a_j], X, Y, err, CMAP_ERR, cfg, a, b,
+                                              cbar_math_format=True,
+                                              cbar_label="|error|",
+                                              title=f"Absolute error of ${var}(x,y)$")
         
         # save standalone plots separately if requested
         if separate_plots:
             fig_sep, ax_sep = plt.subplots(figsize=(6, 3), dpi=FIG_DPI, constrained_layout=True)
-            plot_heatmap_single(ax_sep, X, Y, err, CMAP_ERR, cfg, a, b,
-                                cbar_math_format=True,
-                                cbar_label="|error|",
-                                title=f"Absolute error of ${var}(x,y)$")
+            _plot_heatmap_single(ax_sep, X, Y, err, CMAP_ERR, cfg, a, b,
+                                 cbar_math_format=True,
+                                 cbar_label="|error|",
+                                 title=f"Absolute error of ${var}(x,y)$")
             fname = output_dir / f"error_{var}_{tag}.png"
             fig_sep.savefig(fname, dpi=FIG_DPI)
             plt.close(fig_sep)
     
     
-    # plot total error
-    axes[1, 1] = plot_heatmap_single(axes[1, 1], X, Y, total_err, CMAP_ERR, cfg, a, b,
-                                     cbar_math_format=True,
-                                     cbar_label="|error|",
-                                     title="Total absolute error across variables")
+    # plot mean error
+    mean_err = mean_err / len(variables.keys())
+    axes[1, 1] = _plot_heatmap_single(axes[1, 1], X, Y, mean_err, CMAP_ERR, cfg, a, b,
+                                      cbar_math_format=True,
+                                      cbar_label="|error|",
+                                      title="Mean absolute error across variables")
     
     # if separate plots, need to save total standalone
     if separate_plots:
         fig_sep, ax_sep = plt.subplots(figsize=(6, 3), dpi=FIG_DPI, constrained_layout=True)
-        plot_heatmap_single(ax_sep, X, Y, total_err, CMAP_ERR, cfg, a, b,
-                            cbar_math_format=True,
-                            cbar_label="|error|",
-                            title="Total absolute error across variables")
-        fname = output_dir / f"error_total_{tag}.png"
+        _plot_heatmap_single(ax_sep, X, Y, mean_err, CMAP_ERR, cfg, a, b,
+                             cbar_math_format=True,
+                             cbar_label="|error|",
+                             title="Mean absolute error across variables")
+        fname = output_dir / f"error_mean_{tag}.png"
         fig_sep.savefig(fname, dpi=FIG_DPI)
         plt.close(fig_sep)
         
@@ -438,27 +462,74 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
 
 # ———————————— ACROSS-RUNS ANALYSIS ————————————
 
-def compare_runs(summary_path, output_dir, parameter, 
-                   fixed_ab: list = None, fixed_n = None):
+# --- Helper: Parse Error JSON ---
+def _extract_error_summary(summary_path,
+                           variables: list = ["u", "v", "p"],
+                           metrics: list = ["L2", "L_inf", "MSE"],
+                           aggregate_metrics: list = ["mean_L2", "max_L_inf"]):
     """
-    Create point plots of error across different values of n, for variables u,v,p and total MSE.
+    Extract the entire summary.json into a tidy DataFrame without filtering or averaging.
+    Each row represents one variable/metric or aggregate-metric value for a single run.
+    Returns a DataFrame with columns [ab, a, b, n, variable, metric, value].
+    """
+    summary_path = Path(summary_path)
+    with summary_path.open() as f:
+        errors = json.load(f)
+
+    rows = []
+    for data in errors.values():
+        a = float(data["parameters"]["a"])
+        b = float(data["parameters"]["b"])
+        n = int(data["parameters"]["n"])
+
+        for var in variables:
+            for met in metrics:
+                rows.append({
+                    "ab": f'({a}, {b})',
+                    "a": a,
+                    "b": b,
+                    "n": n,
+                    "variable": var,
+                    "metric": met,
+                    "value": float(data[var][met]),
+                })
+        for aggmetric in aggregate_metrics:
+            rows.append({
+                "ab": f'({a}, {b})',
+                "a": a,
+                "b": b,
+                "n": n,
+                "variable": "aggregate",
+                "metric": aggmetric,
+                "value": float(data["aggregate"][aggmetric]),
+            })
+
+    if len(rows) == 0:
+        raise ValueError("No error data was found in the summary file.")
+
+    return pd.DataFrame(rows).sort_values(by=["a", "b", "n", "variable", "metric"], ignore_index=True)
+
+
+# --- Error Comparison Point Plots ---
+def plot_error_comparison(summary_path, output_dir, parameter, 
+                          fixed_ab: list = None, fixed_n = None):
+    """
+    Compare error across all runs, with a specified parameter as the axis. The free parameter can be fixed or averaged.
     Args:
         summary_path: path to summary.json containing errors across runs
         output_dir: path to folder to save plots
-        axis: string specifying the parameter of interest, choices = ["n", "a", "b", "ab"]
+        parameter: string specifying the parameter of interest, choices = ["n", "a", "b", "ab"]
         fixed_ab: specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
         fixed_n:  specified value of n to use across (a,b); discards other n. If None, takes average errors across all n. Requires variable!="n".
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"CALL param={parameter}, fixed_ab={fixed_ab}, fixed_n={fixed_n}")
     
     # Parse args
     parameter_choices = ["n", "a", "b", "ab"]
     if parameter not in parameter_choices:
         raise ValueError(f"Received parameter = {parameter}, but must be one of {parameter_choices}")
-    if fixed_ab and len(fixed_ab) != 2:
+    if fixed_ab is not None and len(fixed_ab) != 2:
         raise ValueError(f"fixed_ab must be a list of length 2; received {fixed_ab}.")
     if parameter == "n":
         if fixed_n is not None:
@@ -467,65 +538,147 @@ def compare_runs(summary_path, output_dir, parameter,
         if fixed_ab is not None:
             raise ValueError(f"fixed_ab is not compatible with parameter={parameter}.")
     
-    # Load data
-    summary_path = Path(summary_path)
-    with summary_path.open() as f:
-        errors = json.load(f)    # [run_][u/v/p/total/parameters][attribute]
-    
-    METRICS = ["L2", "L_inf", "MSE"]
+    # Error Summary Dict Keys
     VARS = ["u", "v", "p"]
+    METRICS = ["L2", "L_inf"]
+    AGGREGATE_METRICS = ["mean_L2", "max_L_inf"]
     
-    selected = {}
+    PARAMETER_LABELS = {
+        "n": "number of labeled training points",
+        "a": "ellipse width (a)",
+        "b": "ellipse height (b)",
+        "ab": "ellipse geometry (a, b)"
+    }
+
+    error_df = _extract_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
+
+    # filter to specified value of free parameter, if applicable
+    if fixed_ab is not None:
+        error_df = error_df[(error_df["a"].astype(float) == float(fixed_ab[0])) & (error_df["b"].astype(float) == float(fixed_ab[1]))]
+    if fixed_n is not None:
+        error_df = error_df[error_df["n"].astype(int) == int(fixed_n)]
+
+    if error_df.empty:
+        raise ValueError("No matching runs were found for the requested summary selection.")
+
+    # index by parameter of interest (axis)
+    if parameter == "n":
+        error_df["parameter_value"] = error_df["n"]
+        averaging = fixed_ab is None
+    else:
+        error_df["parameter_value"] = error_df["a"]
+        if parameter == "b":
+            error_df["parameter_value"] = error_df["b"]
+        elif parameter == "ab":
+            error_df["parameter_value"] = error_df.apply(lambda row: f"({row['a']}, {row['b']})", axis=1)
+        averaging = fixed_n is None
+
+    if averaging:
+        error_df = error_df.groupby(["parameter_value", "variable", "metric"], observed=True, as_index=False)["value"].mean()
+
+    parameter_order = error_df["parameter_value"].drop_duplicates().tolist()
     
-    # Select runs based on fixed_var, otherwise average across all cases of each parameter value
-    for data in errors.values():
-        # data = {"u"={...}, ..., "total"={}, "parameters"={}}
-        a = data["parameters"]["a"]
-        b = data["parameters"]["b"]
-        n = data["parameters"]["n"]
-        param_keys = {"n": n, "a": a, "b": b, "ab": f"({a}, {b})"}
-        param_key = param_keys[parameter]
-        print(f"param_key: {parameter}={param_key}")
+    # Plot variable-level metrics
+    var_plot_data = error_df[error_df["variable"].isin(VARS) 
+                             & error_df["metric"].isin(METRICS)]
+    for metric in METRICS:
+        plot_data = var_plot_data[var_plot_data["metric"] == metric]
+        ax = sns.pointplot(
+            data=plot_data,
+            x="parameter_value",
+            y="value",
+            hue="variable",
+            hue_order=VARS,
+            order=parameter_order,
+            palette=COLOR_VARIABLE_MAP,
+            markers=["o", "s", "^"],
+            linestyles=["-", "--", ":"],
+            dodge=True,
+        )
+        plt.xlabel(PARAMETER_LABELS[parameter])
+        plt.ylabel(metric)
         
-        if fixed_ab is not None:
-            if a == fixed_ab[0] and b == fixed_ab[1]:
-                print(f"selected a,b={a},{b}")
-                data.pop("parameters")
-                selected[param_key] = data
-                continue
-            else:
-                continue
-        
-        elif fixed_n is not None:
-            if n == fixed_n:
-                print(f"selected n={n}")
-                data.pop("parameters")
-                selected[param_key] = data
-                continue
-            else:
-                continue
-        
+        # label based on args
+        title = f"{metric} error across {parameter}"
+        fname = f"errors_by_{parameter}_{metric}"
+        if fixed_n:
+            title += f", (where n={fixed_n})"
+            fname += f"_n{fixed_n}"
+        elif fixed_ab:
+            title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
+            fname += f"_a{fixed_ab[0]}_b{fixed_ab[1]}"
         else:
-            for data in errors.values():
-                # Initialize selected[param_key] if it doesn't exist
-                if param_key not in selected:
-                    selected[param_key] = {var: {met: [] for met in METRICS} for var in VARS}
-                    selected[param_key]["total"] = {"MSE": []}
-                
-                # Collect errors across (a,b) in lists
-                for var in VARS:
-                    for met in METRICS:
-                        selected[param_key][var][met].append(data[var][met])
-                selected[param_key]["total"]["MSE"].append(data["total"]["MSE"])
+            averaged_across = "ab" if parameter == "n" else "n"
+            title += f", averaged across {averaged_across}"
+        fname += ".png"
             
-            # Now average collected values
-            for param_key in selected:
-                for var in VARS:
-                    for met in METRICS:
-                        selected[param_key][var][met] = np.mean(selected[param_key][var][met])
-                selected[param_key]["total"]["MSE"] = np.mean(selected[param_key]["total"]["MSE"])
+        plt.title(title)
+        plt.tight_layout()
+        
+        savepath = output_dir / fname
+        ax.figure.savefig(savepath, dpi=FIG_DPI)
+        plt.close(ax.figure)
     
-    # Prepare plot data
+    # Plot aggregate metrics
+    agg_plot_data = error_df[(error_df["variable"] == "aggregate") 
+                             & error_df["metric"].isin(AGGREGATE_METRICS)]
+    for aggmetric in AGGREGATE_METRICS:
+        plot_data = agg_plot_data[agg_plot_data["metric"] == aggmetric]
+        ax = sns.pointplot(
+            data=plot_data,
+            x="parameter_value",
+            y="value",
+            order=parameter_order,
+            color=COLOR_AGGREGATE
+        )
+        plt.xlabel(PARAMETER_LABELS[parameter])
+        plt.ylabel(aggmetric)
+        
+        # label based on args
+        title = f"{aggmetric} error of all outputs, across {parameter}"
+        fname = f"errors_by_{parameter}_{aggmetric}"
+        if fixed_n:
+            title += f", (where n={fixed_n})"
+            fname += f"_n{fixed_n}"
+        elif fixed_ab:
+            title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
+            fname += f"_{aggmetric}_a{fixed_ab[0]}_b{fixed_ab[1]}"
+        else:
+            averaged_across = "ab" if parameter == "n" else "n"
+            title += f", averaged across {averaged_across}"
+        fname += ".png"
+            
+        plt.title(title)
+        plt.tight_layout()
+        
+        savepath = output_dir / fname
+        ax.figure.savefig(savepath, dpi=FIG_DPI)
+        plt.close(ax.figure)
+    
+
+# --- Error Comparison Heatmaps ---
+def plot_error_comparison_2d(summary_path, output_dir, index_parameter="n", col_parameter="ab"):
+    """
+    Create 2D grid heatmaps of errors for all combinations of two parameters.
+    Args:
+        summary_path: path to summary.json containing errors across runs
+        output_dir: path to folder to save plots
+        parameter_1: string specifying the parameter to plot on the x-axis, choices = ["n", "a", "b", "ab"]
+        parameter_2: string specifying the parameter of plot on the y-axis, choices = ["n", "a", "b", "ab"]
+    """
+    
+    # parameter = parameter x
+    # select with parameter y fixed at each unique value of parameter y
+    # pivot into 2D array
+    # seaborn heatmap — each cell is a run (unique combo of n and (a,b))
+    # plot different metrics:
+    #   L2 error for each variable (3 plots)
+    #   Linf error for each variable (3 plots)
+    
+    VARS = ["u", "v", "p"]
+    METRICS = ["L2", "L_inf"]
+    AGGREGATE_METRICS = ["mean_L2", "max_L_inf"]
+    
     PARAMETER_LABELS = {
         "n": "number of labeled training points",
         "a": "ellipse width (a)",
@@ -533,48 +686,61 @@ def compare_runs(summary_path, output_dir, parameter,
         "ab": "ellipse geometry (a, b)"
     }
     
-    total_mses = pd.DataFrame(columns=[parameter, 'mse'])     # store for separate plot
+    # cols are a, b, n, variable, metric, value
+    error_df = _extract_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
     
-    for metric in METRICS:
-        
-        plot_data = pd.DataFrame(columns=[parameter, 'variable', 'error'])
-        
-        for param_key, data in selected.items():
-            # keys = parameter values; vals = {'u': {}, ...}            
-            total_mse = data["total"]["MSE"]
-            total_mses.loc[len(total_mses)] = [param_key, total_mse]
-            for var in VARS:
-                error = data[var][metric]
-                plot_data.loc[len(plot_data)] = [param_key, var, error]
-        
-        # Plot metric
-        ax = sns.pointplot(plot_data, x=parameter, y='error', hue='variable')
-        plt.xlabel(PARAMETER_LABELS[parameter])
-        plt.ylabel(metric)
-        
-        title = f"{metric} error across {parameter}"
-        if fixed_n:
-            title += f", (where n={fixed_n})"
-        elif fixed_ab:
-            title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
-        else:
-            averaged_across = "ab" if parameter == "n" else "n"
-            title += f", averaged across {averaged_across}"
+    # Create plot for each metric for each variable
+    for var in VARS:
+        for metric in METRICS:
+            selected = error_df[(error_df["variable"] == var) 
+                                & (error_df["metric"] == metric)]
+            plot_data = selected.pivot(index=index_parameter, columns=col_parameter, values="value")
             
-        plt.title(title)
-        plt.tight_layout()
-        
-        fname = output_dir / f"errors_by_{parameter}_{metric}.png"
-        ax.figure.savefig(fname, dpi=FIG_DPI)
-        plt.close(ax.figure)
+            ax = sns.heatmap(
+                plot_data,
+                cmap=CMAP_ERR,
+                annot=True,
+                linewidth=1.0
+            )
+            
+            plt.xlabel(PARAMETER_LABELS[col_parameter])
+            plt.ylabel(PARAMETER_LABELS[index_parameter])
+            
+            # label based on args
+            title = f"{metric} error for ${var}(x,y)$ across runs"
+            fname = f"errors_heatmap_{var}_{metric}.png"
+                
+            plt.title(title)
+            plt.tight_layout()
+            
+            savepath = output_dir / fname
+            ax.figure.savefig(savepath, dpi=FIG_DPI)
+            plt.close(ax.figure)
     
-    # Also plot total MSE
-    ax = sns.pointplot(total_mses, x=parameter, y='mse')
-    plt.xlabel(PARAMETER_LABELS[parameter])
-    plt.ylabel("Total MSE")
-    plt.title(f"Total MSE of all outputs, across {parameter}")
-    plt.tight_layout()
+    # Create a plot for each aggregate metric
+    for aggmetric in AGGREGATE_METRICS:
+            selected = error_df[(error_df["variable"] == "aggregate") 
+                                & (error_df["metric"] == aggmetric)]
+            plot_data = selected.pivot(index=index_parameter, columns=col_parameter, values="value")
+            
+            ax = sns.heatmap(
+                plot_data,
+                cmap=CMAP_ERR,
+                annot=True,
+                linewidth=0.5
+            )
+            
+            plt.xlabel(PARAMETER_LABELS[col_parameter])
+            plt.ylabel(PARAMETER_LABELS[index_parameter])
+            
+            # label based on args
+            title = f"{aggmetric} error across runs and outputs"
+            fname = f"errors_heatmap_aggregate_{aggmetric}.png"
+                
+            plt.title(title)
+            plt.tight_layout()
+            
+            savepath = output_dir / fname
+            ax.figure.savefig(savepath, dpi=FIG_DPI)
+            plt.close(ax.figure)
     
-    fname = output_dir / f"errors_by_{parameter}_MSE_total.png"
-    ax.figure.savefig(fname, dpi=FIG_DPI)
-    plt.close(ax.figure)

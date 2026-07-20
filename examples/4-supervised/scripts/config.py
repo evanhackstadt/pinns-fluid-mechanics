@@ -1,7 +1,7 @@
 # config.py
 
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Tuple
 
@@ -18,10 +18,12 @@ class StenosisConfig:
     
     # --- Geometry Variables ---
     # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
-    cases: List[Tuple[float, float]] = field(
-        default_factory=lambda: [(0.4, 0.1),    # wide and shallow, easy
-                                #  (0.4, 0.4)     # wide and deeper, hard
-                                 ]
+    geometries: List[Tuple[float, float]] = field(
+        default_factory=lambda: [
+            (0.4, 0.1),    # wide and shallow, easy
+            (0.4, 0.3),
+            (0.5, 0.5)     # wide and deeper, hard
+        ]
     )
     
     
@@ -82,8 +84,9 @@ class StenosisConfig:
                 pinn/
                 plots/
             ...more cases...
-            summary_plots/
-            summary.json
+            summary/
+                summary.json
+                ...error comparison plots...
     '''
     
     base_dir: Path = Path(__file__).resolve().parents[1]
@@ -95,6 +98,10 @@ class StenosisConfig:
     @property
     def results_dir(self) -> Path:
         return self.base_dir / "results"
+    
+    @property
+    def summary_dir(self) -> Path:
+        return self.results_dir / "summary"
 
     def case_tag(self, a, b, n):
         return f"n{n}_a{a:.2f}_b{b:.2f}"
@@ -102,13 +109,11 @@ class StenosisConfig:
     def case_dirs(self, a, b, n):
         tag = self.case_tag(a, b, n)
         base = self.results_dir / tag
-        summary = self.results_dir / "summary_plots"
         return {
             "base":   base,
             "fem":    base / "fem",
             "pinn":   base / "pinn",
-            "plots":  base / "plots",
-            "summary_plots": summary
+            "plots":  base / "plots"
         }
 
     def make_dirs(self, a, b, n):
@@ -123,41 +128,7 @@ class StenosisConfig:
                 f.unlink()
     
     def config_as_dict(self, a=None, b=None, n=None):
-        return {
-            "Geometry": {
-                "L": self.L,
-                "H_max": self.H_max,
-                "x_c": self.x_c,
-                "y_c": self.y_c,
-                "angle": self.angle,
-                "a": a,
-                "b": b
-            },
-            "Physics": {
-                "Re": self.Re,
-                "n_in_max": self.u_in_max,
-                "P_out": self.P_out,
-                "U_ref": self.U_ref
-            },
-            "PINN": {
-                "n_labeled": n,
-                "n_interior": self.n_interior,
-                "n_boundary": self.n_boundary,
-                "n_test": self.n_test,
-                "n_adam": self.n_adam,
-                "lr": self.lr,
-                "loss_weights_adam": self.loss_weights_adam,
-                "n_lbfgs": self.n_lbfgs,
-                "gtol_lbfgs": self.gtol_lbfgs,
-                "ftol_lbfgs": self.ftol_lbfgs
-            },
-            "FEM": {
-                "mesh_size": self.mesh_size
-            },
-            "Misc": {
-                "nx": self.nx,
-                "ny": self.ny
-            }
-        }
+        cfg_dict = {k: str(v) for k, v in asdict(self).items()}
+        cfg_dict["run_parameters"] = {'a': a, 'b': b, 'n_labeled': n}
         
-        
+        return cfg_dict
