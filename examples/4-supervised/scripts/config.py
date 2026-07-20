@@ -14,15 +14,17 @@ class StenosisConfig:
     H_max: float = 1.0      # height of channel unobstructed
     x_c: float = 0.0        # ellipse center x
     y_c: float = 1.0        # ellipse center y
-    angle: float = 0.0      # ellipse angle, keep 0 for now (can add to variables)
     
     # --- Geometry Variables ---
-    # List of (a, b) ellipse semi-axis pairs to train/evaluate over.
+    # List of (a, b) = ellipse semimajor, semiminor axes to train/evaluate over
     geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (0.4, 0.1),    # wide and shallow, easy
+            # no rotation
+            (0.4, 0.1),     # smallest, easiest
             (0.4, 0.3),
-            (0.5, 0.5)     # wide and deeper, hard
+            (0.3, 0.5),     # special: taller than it is wide
+            (0.5, 0.5),
+            (0.6, 0.7),     # biggest, hardest
         ]
     )
     
@@ -41,8 +43,7 @@ class StenosisConfig:
     n_boundary: int = 500   # default 800, can tune. Fed to BC loss.
     n_test: int = 500      # default 2000, can tune. Sampled from both interior & boundary.
     n_labeled: List[int] = field(
-        # try different N of labeled data.
-        default_factory=lambda: [0, 3, 5, 10, 25, 100, 250]
+        default_factory=lambda: [0, 1, 2, 3, 5, 10, 25, 50, 100]
     )
     
     layers: List[int] = field(default_factory=lambda: [3, 128, 128, 3])     # (x,y,h)->...->(u,v,p)
@@ -69,7 +70,7 @@ class StenosisConfig:
     
     
     # --- Visualization ---
-    nx = 200
+    nx = 200    # heatmap mesh
     ny = 100
     
     
@@ -102,23 +103,32 @@ class StenosisConfig:
     @property
     def summary_dir(self) -> Path:
         return self.results_dir / "summary"
-
-    def case_tag(self, a, b, n):
-        return f"n{n}_a{a:.2f}_b{b:.2f}"
-
-    def case_dirs(self, a, b, n):
-        tag = self.case_tag(a, b, n)
+    
+    def geo_tag(self, a, b):
+        return f"a{a:.2f}_b{b:.2f}"
+    
+    def geo_dirs(self, a, b):
+        tag = self.geo_tag(a, b)
         base = self.results_dir / tag
         return {
+            "base": base,
+            "fem":  base / "fem",
+        }
+
+    def case_dirs(self, a, b, n):
+        base = self.geo_dirs(a, b)["base"] / f"n{n}"
+        return {
             "base":   base,
-            "fem":    base / "fem",
             "pinn":   base / "pinn",
             "plots":  base / "plots"
         }
 
-    def make_dirs(self, a, b, n):
-        for d in self.case_dirs(a, b, n).values():
+    def make_dirs(self, a, b, n = None):
+        for d in self.geo_dirs(a, b).values():
             d.mkdir(parents=True, exist_ok=True)
+        if n is not None:
+            for d in self.case_dirs(a, b, n).values():
+                d.mkdir(parents=True, exist_ok=True)
     
     def clear_pinn(self, a, b, n):
         target = self.case_dirs(a, b, n)["pinn"]

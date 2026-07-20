@@ -23,7 +23,7 @@ import deepxde as dde
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import solve_stenosis, fem_predict
-from pinn import build_model, train_model, restore_model, pinn_predict
+from pinn import build_labeled_sequence, train_model, restore_model, pinn_predict
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
                       plot_output_heatmaps, plot_error_heatmaps,
@@ -78,14 +78,50 @@ def load_case_errors(cfg: StenosisConfig, a: float, b: float, n_labeled: int):
 
 # --- Train + Evaluate a single ellipse geometry ---
 def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
-             skip_mesh: bool, skip_fem: bool, skip_pinn: bool, 
-             separate_plots: bool, fem_only: bool):
+             all_labeled_pts: np.ndarray, fem_data: np.ndarray,
+             skip_pinn: bool, separate_plots: bool):
 
-    cfg.make_dirs(a, b, n_labeled)
     dirs = cfg.case_dirs(a, b, n_labeled)
     tag  = cfg.case_tag(a, b, n_labeled)
     print(f"\n{'='*60}\nCase: {tag}\n{'='*60}")
 
+    # --- PINN ---
+    model_prefix = dirs['pinn'] / "model"
+    labeled_pts = all_labeled_pts[:n_labeled] if n_labeled > 0 else None
+    
+    if not skip_pinn:
+        cfg.clear_pinn(a, b, n_labeled)    # clear old models
+        model = train_model(labeled_pts, cfg, a, b, n_labeled, model_prefix)
+    else:
+        model = restore_model(labeled_pts, cfg, a, b, n_labeled, model_prefix)
+
+    # --- Analysis ---    
+    loss_data   = np.loadtxt(dirs['pinn'] / "loss.dat",
+                             delimiter=" ", comments="#")
+    plot_loss_curves(loss_data, dirs['plots'])
+    plot_domain(cfg, a, b, dirs['plots'], labeled_pts)
+    
+    # get model outputs
+    query = fem_data[:, 0:2]
+    pinn_data = pinn_predict(model, query)
+    
+    errors    = compute_errors(pinn_data, fem_data)
+    save_errors(errors, dirs['base'], a, b, n_labeled)
+    plot_output_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
+    plot_error_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
+    
+    print(f"\nAnalysis and Visualization complete.")
+
+    return errors
+
+
+def run_geometry(cfg: StenosisConfig, a: float, b: float,
+                 skip_mesh: bool, skip_fem: bool, fem_only: bool):
+    
+    cfg.make_dirs(a, b)
+    dirs = cfg.geo_dirs(a, b)
+    tag = cfg.geo_tag(a, b)
+    
     # --- Mesh ---
     msh_file = cfg.meshes_dir / f"stenosis_{tag}.msh"
     if not skip_mesh:
@@ -95,8 +131,8 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
 
     # --- FEM ground truth ---
     fem_file = dirs['fem'] / "solution.npz"
-    if not skip_fem:
-        
+    
+    if not skip_fem:    
         msh, u_sol, p_sol = solve_stenosis(cfg, msh_file)
         
         # Save on a dense evaluation grid for later comparison
@@ -104,9 +140,11 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
         ys = np.linspace(0, cfg.H_max, cfg.ny)
         XX, YY = np.meshgrid(xs, ys)
         flat = np.column_stack([XX.ravel(), YY.ravel()])
+        
         # Mask out points inside the ellipse obstruction
         mask = ellipse_mask(flat[:, 0], flat[:, 1], cfg, a, b)
         query = flat[mask]
+        
         # Get FEM vals for the uniform query
         fem_data = fem_predict(u_sol, p_sol, msh, query, cfg)    # fem_data also holds query pts
         np.savez(fem_file, data=fem_data)
@@ -114,50 +152,19 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
         
     else:
         print(f"Skipping FEM, loading from {fem_file}")
-    
-    if fem_only:
-        print("FEM complete. Skipping PINN and analysis for this case.")
-        return None
 
-    # Reload the ground truth regardless of skip
+    # Reload the ground truth
     fem_file = np.load(fem_file, allow_pickle=True)
     fem_data = fem_file['data']
     query    = fem_data[:, 0:2]
-
-    # --- PINN ---
-    model_prefix = dirs['pinn'] / "model"
-    if not skip_pinn:
-        cfg.clear_pinn(a, b, n_labeled)    # clear old models
-        model = train_model(fem_data, cfg, a, b, n_labeled, model_prefix)
-    else:
-        model = restore_model(fem_data, cfg, a, b, n_labeled, model_prefix)
     
-
-    # --- Analysis ---    
+    # Sample labeled points first (to enable nested subsampling)
+    n_max = max(cfg.n_labeled)
+    labeled_points = build_labeled_sequence(fem_data, n_max, cfg, uniform_frac=0.3)
+    savepath = dirs["fem"] / f"labeled_points_nmax_{n_max}.csv"
+    np.savetxt(savepath, labeled_points, delimiter=",")
     
-    # training / general
-    loss_data   = np.loadtxt(dirs['pinn'] / "loss.dat",
-                             delimiter=" ", comments="#")
-    if n_labeled > 0:
-        labeled_pts = np.loadtxt(dirs['pinn'] / "labeled_points.csv",
-                                delimiter=",")
-    else:
-        labeled_pts = None
-    
-    plot_loss_curves(loss_data, dirs['plots'])
-    plot_domain(cfg, a, b, dirs['plots'], labeled_pts)
-    
-    # model outputs
-    pinn_data = pinn_predict(model, query)
-    errors    = compute_errors(pinn_data, fem_data)
-    save_errors(errors, dirs['base'], a, b, n_labeled)
-
-    plot_output_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
-    plot_error_heatmaps(pinn_data, fem_data, cfg, tag, dirs['plots'], a, b, separate_plots)
-    print(f"\nAnalysis and Visualization complete.")
-
-    return errors
-
+    return fem_data, labeled_points
 
 
 def main():
@@ -177,37 +184,46 @@ def main():
     cfg.meshes_dir.mkdir(parents=True, exist_ok=True)
     cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
-    cases_print = [[n, (a, b)] for n in cfg.n_labeled for (a, b) in cfg.geometries]
     print(f"Execution Plan:")
-    for case in cases_print:
-        print(f"n={case[0]}, (a,b)={case[1]}")
+    for n, (a, b) in [(n, (a, b)) for n in cfg.n_labeled for (a, b) in cfg.geometries]:
+        print(f"n={n}, (a,b)=({a}, {b})")
+    
     
     all_errors = {}
     run_i = 1
     for (a, b) in cfg.geometries:
+        
+        fem_data, all_labeled_pts = run_geometry(cfg, a, b,
+                                             skip_mesh=args.skip_mesh,
+                                             skip_fem=args.skip_fem,
+                                             fem_only=args.fem_only)
+        
         for n in cfg.n_labeled:
+            
+            cfg.make_dirs(a, b, n)
+            
             if args.skip_complete and case_complete(cfg, a, b, n):
                 print(f"Skipping complete case: {cfg.case_tag(a, b, n)}")
                 errors = load_case_errors(cfg, a, b, n)
+            if args.fem_only:
+                print(f"Skipping PINN and analysis...")
             else:
-                errors = run_case(cfg, a, b, n,
-                                  skip_mesh=args.skip_mesh,
-                                  skip_fem=args.skip_fem,
+                errors = run_case(cfg, a, b, n, 
+                                  all_labeled_pts, fem_data,
                                   skip_pinn=args.skip_pinn,
-                                  separate_plots=args.separate_plots,
-                                  fem_only=args.fem_only)
+                                  separate_plots=args.separate_plots)
+                all_errors[f"run{run_i}"] = errors
+                all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
+                run_i += 1
 
             config_dict = cfg.config_as_dict(a,b,n)
             config_path = cfg.case_dirs(a,b,n)["base"] / "config_log.json"
             with config_path.open("w", encoding="utf-8") as f:
                 json.dump(config_dict, f, indent=2)
-
-            if not args.fem_only:
-                all_errors[f"run{run_i}"] = errors
-                all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
-                run_i += 1
+                
 
     if not args.fem_only:
+        
         # Summary across all cases
         cfg.summary_dir.mkdir(parents=True, exist_ok=True)
         summary_path = cfg.summary_dir / "summary.json"

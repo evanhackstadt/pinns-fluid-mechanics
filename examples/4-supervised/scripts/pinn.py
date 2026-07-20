@@ -63,21 +63,15 @@ def inlet_u(x):
     return (U_IN_MAX / U_REF) * 4.0 * (y / H_MAX) * (1.0 - y / H_MAX)
 
 
-# --- Sample Labeled Data ---
-def sample_labeled_data(fem_data, n_points, cfg, uniform_frac=0.3):
+# --- Create Labeled Data ---
+def build_labeled_sequence(fem_data, n_max, cfg, uniform_frac=0.3):
     """
-    Sample labeled FEM points biased toward high-gradient regions.
-    Args:
-        fem_data:     (M, 5) array [x, y, u, v, p], ellipse-masked
-        n_points:     total number of points to sample
-        cfg:          config object
-        uniform_frac: fraction of n_points drawn uniformly (rest drawn by gradient score)
-    Returns:
-        labeled_data: (n_points, 5) subset of fem_data
+    Build a single nested sequence of up to n_max labeled points.
+    Returns subset of fem_data, shape (n_max, 5), ordered by selection priority. 
+    Each prefix of length n is the labeled set for that n.
     """
-    
-    if n_points <= 0:
-        return None
+    if n_max <= 0:
+        assert f"n_max = {n_max} (must be > 0)"
     
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
@@ -88,31 +82,28 @@ def sample_labeled_data(fem_data, n_points, cfg, uniform_frac=0.3):
     dv = np.abs(np.gradient(v)) + np.abs(np.gradient(np.gradient(v)))
     dp = np.abs(np.gradient(p))
 
-    raw_scores = du + dv + dp
-    
     # Clip outliers before normalizing to avoid one extreme point dominating
-    raw_scores = np.clip(raw_scores, 0, np.percentile(raw_scores, 95))
+    raw_scores = np.clip(du + dv + dp, 0, np.percentile(du + dv + dp, 95))
     scores = raw_scores / raw_scores.sum()
 
-    # Split sample budget
-    n_uniform = int(n_points * uniform_frac)
-    n_scored  = n_points - n_uniform
+    generator = np.random.default_rng(seed=cfg.seed)
+    n_scored  = int(n_max * (1 - uniform_frac))
+    n_uniform = n_max - n_scored
 
     # Sample indices
-    generator = np.random.default_rng(seed=cfg.seed)
-    idx_uniform = np.random.Generator.choice(generator, M, size=n_uniform, replace=False)
-    idx_scored  = np.random.Generator.choice(generator, M, size=n_scored, replace=False, p=scores)
+    idx_scored  = generator.choice(M, size=n_scored,  replace=False, p=scores)
+    idx_uniform = generator.choice(M, size=n_uniform, replace=False)
 
-    # Merge and deduplicate
-    all_idx = np.unique(np.concatenate([idx_scored, idx_uniform]))
+    # Merge while preserving scored-first order, then uniform
+    all_idx = list(dict.fromkeys([*idx_scored, *idx_uniform]))  # dedup, preserve order
 
-    # If deduplication reduced count, top up with additional uniform samples
-    if len(all_idx) < n_points:
-        remaining = np.setdiff1d(np.arange(M), all_idx)
-        top_up = np.random.Generator.choice(generator, remaining, size=n_points-len(all_idx), replace=False)
-        all_idx = np.concatenate([all_idx, top_up])
+    # Top up if deduplication reduced count
+    if len(all_idx) < n_max:
+        remaining = list(set(range(M)) - set(all_idx))
+        top_up = generator.choice(remaining, size=n_max - len(all_idx), replace=False)
+        all_idx.extend(top_up)
 
-    return fem_data[all_idx]
+    return fem_data[all_idx[:n_max]]
 
 
 # --- Define the PDE Residual ---
@@ -220,11 +211,11 @@ class LossMagnitudeReweighter(dde.callbacks.Callback):
 # ———————————— PINN WORKHORSE FUNCTIONS / ENTRY POINTS ————————————
 
 # --- Instantiate Model Object ---
-def build_model(fem_data, cfg, a, b, n_labeled):
+def build_model(labeled_pts, cfg, a, b, n_labeled):
     """
     Constructs model object based on geometry, BCs, data, and network config.
     Args:
-        fem_data: ground-truth array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
+        labeled_pts: ground-truth array of shape (n_labeled, 5) with columns = [x, y, u_fem, v_fem, p_fem]
         cfg: custom config class object
         a: ellipse semimajor (half width)
         b: ellipse semiminor (half height)
@@ -238,7 +229,7 @@ def build_model(fem_data, cfg, a, b, n_labeled):
     
     # Construct the geometry: base channel rectangle - obstructing ellipse
     channel = dde.geometry.Rectangle([-cfg.L/2, 0], [cfg.L/2, cfg.H_max])
-    obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], a, b, cfg.angle)
+    obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], a, b)
     geometry = dde.geometry.CSGDifference(channel, obstruction)
 
     # Define the boundary conditions
@@ -249,9 +240,6 @@ def build_model(fem_data, cfg, a, b, n_labeled):
     bc_outlet_p = dde.DirichletBC(geometry, lambda x: cfg.P_out/cfg.U_ref**2, outlet, component=2)   # outlet pressure=0.0
     
     bcs = [bc_inlet_u, bc_inlet_v, bc_wall_u, bc_wall_v, bc_outlet_p]
-    
-    # Sample labeled data points
-    labeled_pts = sample_labeled_data(fem_data, n_labeled, cfg, uniform_frac=0.3)
     
     if n_labeled > 0:
         obs_xy  = labeled_pts[:, 0:2]   # (N, 2)
@@ -291,11 +279,11 @@ def build_model(fem_data, cfg, a, b, n_labeled):
     
 
 # --- Core Training Function ---
-def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
+def train_model(labeled_pts, cfg, a, b, n_labeled, model_prefix):
     """
     Constructs model object and trains until convergence, saving model and metadata.
     Args:
-        fem_data: ground-truth array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
+        labeled_pts: ground-truth array of shape (n_labeled, 5) with columns = [x, y, u_fem, v_fem, p_fem]
         cfg: custom config class object
         a: ellipse semimajor (half width)
         b: ellipse semiminor (half height)
@@ -309,7 +297,7 @@ def train_model(fem_data, cfg, a, b, n_labeled, model_prefix):
     set_global_constants(cfg, a, b)
     
     # Build model
-    model, labeled_pts = build_model(fem_data, cfg, a, b, n_labeled)
+    model, labeled_pts = build_model(labeled_pts, cfg, a, b, n_labeled)
     
     # exclude last 3 loss weights if we don't have labeled points
     loss_weights = cfg.loss_weights_adam[:-3] if n_labeled <= 0 else cfg.loss_weights_adam

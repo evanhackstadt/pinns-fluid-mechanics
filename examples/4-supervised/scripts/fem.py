@@ -88,7 +88,7 @@ def build_function_space_and_bcs(msh, facet_tags, cfg):
 
     def inlet_profile(x):
         pts = np.asarray(x).T
-        profile = inlet_u(pts).reshape(-1)
+        profile = inlet_u(pts).reshape(-1)      # function from pinn.py
         return np.vstack((profile, np.zeros_like(profile)))
 
     u_in.interpolate(inlet_profile)
