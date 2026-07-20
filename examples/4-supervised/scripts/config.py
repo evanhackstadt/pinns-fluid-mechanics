@@ -19,7 +19,6 @@ class StenosisConfig:
     # List of (a, b) = ellipse semimajor, semiminor axes to train/evaluate over
     geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            # no rotation
             (0.4, 0.1),     # smallest, easiest
             (0.4, 0.3),
             (0.3, 0.5),     # special: taller than it is wide
@@ -106,6 +105,9 @@ class StenosisConfig:
     
     def geo_tag(self, a, b):
         return f"a{a:.2f}_b{b:.2f}"
+    
+    def case_tag(self, a, b, n):
+        return f"n{n}_a{a:.2f}_b{b:.2f}"
     
     def geo_dirs(self, a, b):
         tag = self.geo_tag(a, b)
