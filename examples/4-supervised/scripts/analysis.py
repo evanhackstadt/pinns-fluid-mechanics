@@ -234,7 +234,6 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts=None):
     ellipse = Ellipse(xy=(cfg.x_c, cfg.y_c), 
                       width=a*2, 
                       height=b*2, 
-                      angle=cfg.angle,
                       color='black')
     ax.add_patch(ellipse)
     
@@ -300,7 +299,6 @@ def _plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
             xy=(cfg.x_c, cfg.y_c),
             width=a * 2,
             height=b * 2,
-            angle=np.degrees(cfg.angle),
             edgecolor="black",
             facecolor="none",
             linestyle="--",
