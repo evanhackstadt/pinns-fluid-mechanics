@@ -132,8 +132,7 @@ class StenosisConfig:
             for d in self.case_dirs(a, b, n).values():
                 d.mkdir(parents=True, exist_ok=True)
     
-    def clear_pinn(self, a, b, n):
-        target = self.case_dirs(a, b, n)["pinn"]
+    def clear_dir(self, target):
         target.mkdir(parents=True, exist_ok=True)
         for f in target.iterdir():
             if f.is_file():

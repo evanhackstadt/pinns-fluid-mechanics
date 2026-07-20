@@ -83,14 +83,14 @@ def run_case(cfg: StenosisConfig, a: float, b: float, n_labeled: int,
 
     dirs = cfg.case_dirs(a, b, n_labeled)
     tag  = cfg.case_tag(a, b, n_labeled)
-    print(f"\n{'='*60}\nCase: {tag}\n{'='*60}")
+    print(f"\n{'='*50}\nCase: {tag}\n{'='*50}")
 
     # --- PINN ---
     model_prefix = dirs['pinn'] / "model"
     labeled_pts = all_labeled_pts[:n_labeled] if n_labeled > 0 else None
     
     if not skip_pinn:
-        cfg.clear_pinn(a, b, n_labeled)    # clear old models
+        cfg.clear_dir(dirs['pinn'])     # clear old models
         model = train_model(labeled_pts, cfg, a, b, n_labeled, model_prefix)
     else:
         model = restore_model(labeled_pts, cfg, a, b, n_labeled, model_prefix)
@@ -184,19 +184,16 @@ def main():
     cfg.meshes_dir.mkdir(parents=True, exist_ok=True)
     cfg.results_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Execution Plan:")
-    for n, (a, b) in [(n, (a, b)) for n in cfg.n_labeled for (a, b) in cfg.geometries]:
-        print(f"n={n}, (a,b)=({a}, {b})")
-    
+    print(f"Execution Plan: all combinations of\nn={cfg.n_labeled}\n(a,b)={cfg.geometries}")
     
     all_errors = {}
     run_i = 1
     for (a, b) in cfg.geometries:
         
         fem_data, all_labeled_pts = run_geometry(cfg, a, b,
-                                             skip_mesh=args.skip_mesh,
-                                             skip_fem=args.skip_fem,
-                                             fem_only=args.fem_only)
+                                                 skip_mesh=args.skip_mesh,
+                                                 skip_fem=args.skip_fem,
+                                                 fem_only=args.fem_only)
         
         for n in cfg.n_labeled:
             
