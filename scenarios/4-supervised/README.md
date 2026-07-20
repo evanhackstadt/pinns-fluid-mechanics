@@ -1,4 +1,4 @@
-# 2D Parameterized Stenosis
+# 2D Stenosis with Supervised Training
 
 Evan Hackstadt
 Rugonyi Lab
@@ -6,6 +6,7 @@ Rugonyi Lab
 ## Added Complexity from Stenosis
 
 - Incorporate sparse labeled data to enable semi-supervised training
+- Perform additional / refined error sensitivity analysis
 
 ## Spatial domain
 
@@ -16,14 +17,14 @@ Rugonyi Lab
 
 - L, H_MAX, ellipse params
 - Reynold's number (Re) = 100
-- Inlet x-velocity profile = Poiseuille parabola, max at y(H/2) = 1.5
+- Inlet x-velocity profile = Poiseuille parabola, max at y(H/2) = 1.0
 - Outlet pressure = 0.0
 
 ## Data Breakdown
 
-- Interior collocation points - unlabeled - for PDE loss (e.g. 2000)
-- Boundary points - unlabeled - for BC loss (e.g. 800)
-- **Sparse velocity measurements - labeled** - sampled from FEM (e.g. 100)
+- Interior collocation points - unlabeled - for PDE loss (e.g. 1000)
+- Boundary points - unlabeled - for BC loss (e.g. 500)
+- **Sparse velocity measurements - labeled** - sampled from FEM (e.g. 25)
 
 ## Explicit Navier-Stokes PDEs
 
@@ -41,12 +42,13 @@ u\frac{\partial v}{\partial x} + v\frac{\partial v}{\partial y} + \frac{\partial
 
 ## PINN Model
 
-- Unsupervised
+- Supervised
 - Inputs: (x, y, h) = (x-position, y-position, channel height)
 - Outputs: (u, v, p) = (x-velocity, y-velocity, pressure)
 - Data:
   - Interior collocation points (x,y) --> u,v,p --> auto-diff --> PDE loss
   - Boundary condition points (x,y) --> u,v,p --> BC Loss
+  - Interior labeled points from FEM (x,y) --> u,v,p --> BC Loss
 - Loss Terms:
   - L_pde = residuals from the NS PDEs above
-  - L_bc = residuals from conditions (inlet u profile, u=0 at walls, outlet pressure)
+  - L_bc = residuals from conditions (inlet u profile, u=0 at walls, outlet pressure) + residuals from labeled data (obs u, obs v, obs p)
