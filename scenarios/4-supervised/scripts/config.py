@@ -79,14 +79,17 @@ class StenosisConfig:
         meshes/
         scripts/
         results/
-            a0.5_b0.3_n25/
+            a0.5_b0.3/
                 fem/
-                pinn/
-                plots/
-            ...more cases...
+                n0/
+                    pinn/
+                    plots/
+                n1/
+                ...
+            ...
             summary/
                 summary.json
-                ...error comparison plots...
+                summary_plots/
     '''
     
     base_dir: Path = Path(__file__).resolve().parents[1]
