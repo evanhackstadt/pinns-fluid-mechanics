@@ -199,19 +199,21 @@ def main():
             
             cfg.make_dirs(a, b, n)
             
-            if args.skip_complete and case_complete(cfg, a, b, n):
-                print(f"Skipping complete case: {cfg.case_tag(a, b, n)}")
-                errors = load_case_errors(cfg, a, b, n)
             if args.fem_only:
                 print(f"Skipping PINN and analysis...")
+                continue
+            elif args.skip_complete and case_complete(cfg, a, b, n):
+                print(f"Skipping complete case: {cfg.case_tag(a, b, n)}")
+                errors = load_case_errors(cfg, a, b, n)
             else:
                 errors = run_case(cfg, a, b, n, 
                                   all_labeled_pts, fem_data,
                                   skip_pinn=args.skip_pinn,
                                   separate_plots=args.separate_plots)
-                all_errors[f"run{run_i}"] = errors
-                all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
-                run_i += 1
+            
+            all_errors[f"run{run_i}"] = errors
+            all_errors[f"run{run_i}"]["parameters"] = {"a": a, "b": b, "n": n}
+            run_i += 1
 
             config_dict = cfg.config_as_dict(a,b,n)
             config_path = cfg.case_dirs(a,b,n)["base"] / "config_log.json"
