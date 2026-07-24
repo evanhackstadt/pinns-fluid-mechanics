@@ -34,19 +34,19 @@ COLOR_AGGREGATE = PALETTE_DEEP[5]
 COLOR_PDE   = PALETTE_DEEP[6]
 COLOR_BC    = PALETTE_DEEP[7]
 COLOR_VARIABLE_MAP = {"u": COLOR_U, "v": COLOR_V, "p": COLOR_P}
-LOSS_COLORS = {
-    "PDE_continuity": PALETTE_DEEP[0],
-    "PDE_x_momentum": PALETTE_DEEP[1],
-    "PDE_y_momentum": PALETTE_DEEP[2],
-    "BC_inlet_u": PALETTE_DEEP[3],
-    "BC_inlet_v": PALETTE_DEEP[4],
-    "BC_wall_u": PALETTE_DEEP[5],
-    "BC_wall_v": PALETTE_DEEP[6],
-    "BC_outlet_p": PALETTE_DEEP[7],
-    "BC_observed_u": PALETTE_DEEP[8],
-    "BC_observed_v": PALETTE_DEEP[9],
-    "BC_observed_p": "#8A2BE2",
-}
+# LOSS_COLORS = {
+#     "PDE_continuity": PALETTE_DEEP[0],
+#     "PDE_x_momentum": PALETTE_DEEP[1],
+#     "PDE_y_momentum": PALETTE_DEEP[2],
+#     "BC_inlet_u": PALETTE_DEEP[3],
+#     "BC_inlet_v": PALETTE_DEEP[4],
+#     "BC_wall_u": PALETTE_DEEP[5],
+#     "BC_wall_v": PALETTE_DEEP[6],
+#     "BC_outlet_p": PALETTE_DEEP[7],
+#     "BC_observed_u": PALETTE_DEEP[8],
+#     "BC_observed_v": PALETTE_DEEP[9],
+#     "BC_observed_p": "#8A2BE2",
+# }
 FIG_DPI    = 200
 
 
@@ -505,7 +505,7 @@ def _extract_error_summary(summary_path,
     if len(rows) == 0:
         raise ValueError("No error data was found in the summary file.")
 
-    return pd.DataFrame(rows).sort_values(by=["a", "b", "n", "variable", "metric"], ignore_index=True)
+    return pd.DataFrame(rows).sort_values(by=["b", "a", "n", "variable", "metric"], ignore_index=True)
 
 
 # --- Error Comparison Point Plots ---
