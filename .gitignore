@@ -7,3 +7,6 @@ outputs/
 
 meshes/
 results/
+
+fem/
+data/
