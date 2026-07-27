@@ -11,7 +11,7 @@ Rugonyi Lab
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 
 @dataclass
@@ -75,16 +75,20 @@ class StenosisConfig:
     gtol_lbfgs: float = 1e-10   # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0
     
-    # fine-tune adam
-    n_adam_finetune: int = 1000
+    # prediction & fine-tuning
+    test_observation_components: List[int] = field(
+        default_factory=lambda: [1]   # 0=u, 1=v, 2=p; currently just use v to simulate doppler
+    )
+    test_observation_loss_weight: float = 100   # per component
+    n_finetune: int = 1000
     lr_finetune: float = 1e-5
-    loss_weights_finetune: List[float] = field(     # TODO
-        default_factory=lambda: [1, 1, 1,   # PDE terms
-                                 5, 5,      # bc inlet u, v
-                                 50, 50,    # bc walls u, v
-                                 5,         # bc outlet p
-                                 100,       # observed velocity bc
-                                 10]        # weight anchor (regularization)
+    lambda_anchor: float = 0.01     # regularization strength, default=0.01
+    finetune_strategies: Dict = field(
+        default_factory=lambda: {
+            "+finetune": {"anchor": False, "hardbc": False},
+            "+anchor":   {"anchor": True,  "hardbc": False},
+            "+hardbc":   {"anchor": True,  "hardbc": True},
+        }
     )
     
     
@@ -114,13 +118,17 @@ class StenosisConfig:
                 *.pt
                 *.dat
             plots/
+                summary/
                 train/...geos...
                 test/...geos...
-                summary/
         scripts/
     '''
     
     base_dir: Path = Path(__file__).resolve().parents[1]
+    
+    @property
+    def data_dir(self) -> Path:
+        return self.base_dir / "data"
     
     @property
     def fem_dir(self) -> Path:
@@ -169,9 +177,17 @@ class StenosisConfig:
             return self.plots_dir / self.train_or_test(a, b) / self.geo_tag(a, b)
         else:
             return None
+    
+    def plots_geo_strategy_dirs(self, a, b):
+        parent = self.plots_geo_dir(a, b)
+        dirs = {"parent": parent, "baseline": parent / "baseline"}
+        for strat in self.finetune_strategies:
+            dirs[strat] = parent / strat
+        return dirs
 
     
     def make_all_dirs(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.fem_dir.mkdir(parents=True, exist_ok=True)
         self.meshes_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -180,7 +196,8 @@ class StenosisConfig:
         for (a, b) in self.train_geometries:
             self.plots_geo_dir(a, b).mkdir(parents=True, exist_ok=True)
         for (a, b) in self.test_geometries:
-            self.plots_geo_dir(a, b).mkdir(parents=True, exist_ok=True)
+            for d in self.plots_geo_strategy_dirs(a, b).values():
+                d.mkdir(parents=True, exist_ok=True)
     
     def clear_dir(self, target):
         target.mkdir(parents=True, exist_ok=True)

@@ -133,7 +133,6 @@ def plot_loss_curves(loss_data, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     n_terms = int((loss_data.shape[1] - 1) / 2)
-    print(f"Extracting {n_terms} loss terms")
     
     if loss_data.shape[1] % 2 != 1:
         raise ValueError("Problem parsing loss_data array. Expects an odd number of columns = steps + 2*n_loss_terms.")
@@ -221,7 +220,7 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
         a: ellipse semimajor (half width)
         b: ellipse semiminor (half height)
         output_dir: path to the relevant plots folder to save plot
-        labeled_pts: array of shape (N, >2) with columns = [x, y, ...]
+        labeled_pts: array of shape (N, ≥4) with columns = [x,y,a,b,...]
     """
     # create box
     fig, ax = plt.subplots(figsize=(10, 5), dpi=FIG_DPI)
@@ -237,7 +236,7 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
                       color='black')
     ax.add_patch(ellipse)
     
-    # add points used for supervised learning
+    # add points used for supervised learning               TODO: color by this/other geo based on (a,b)
     if labeled_pts is not None:
         plt.scatter(labeled_pts[:, 0], labeled_pts[:, 1], s=25, c=COLOR_TRUE)
         plt.title(f"Domain with n={labeled_pts.shape[0]} measurements (green)")
@@ -274,14 +273,11 @@ def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
 
 # --- Helper: Plot One Heatmap ---
 def _plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
-                        cbar_math_format=False, cbar_cap=False,
-                        cbar_label=None, title=None):
-    
-    vmax = np.percentile(values, 95) if cbar_cap else np.max(values)
+                        cbar_math_format=False, cbar_label=None, title=None):
     
     X_grid, Y_grid, Z_grid = _prepare_grid_data(X, Y, values, cfg, a, b)
     pcm = axis.pcolormesh(X_grid, Y_grid, Z_grid, cmap=cmap, 
-                          shading="auto", vmax=vmax)
+                          shading="auto")
     cbar = plt.colorbar(pcm, ax=axis, label=cbar_label)
     
     # format
@@ -326,7 +322,7 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
         fem_data:  array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
         query: array of (x,y) inputs parallel to outputs, shape (N, 2)
         cfg: custom config class object
-        tag: string noting a, b, and Re of the run
+        tag: string to label the file with (e.g. a, b, other params)
         output_dir: path to the relevant plots folder to save file
         a (optional): ellipse a; providing a and b will plot the ellipse wall on the heatmap
         b (optional): ellipse b; providing a and b will plot the ellipse wall on the heatmap
@@ -349,12 +345,8 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
     for i, (model, data) in enumerate(models.items()):
         for j, var in enumerate(variables):
             
-            # cbar_cap = True if model == "FEM" else False
-            cbar_cap = False
-            
             values = data[:, j+2]
             axes[i, j] = _plot_heatmap_single(axes[i, j], X, Y, values, CMAP_VAR, cfg, a, b,
-                                              cbar_cap=cbar_cap,
                                               cbar_label=f"${var}$",
                                               title=f"{model} ${var}(x, y)$")
             
@@ -458,15 +450,15 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
 
 
 
-# ———————————— ACROSS-RUNS ANALYSIS ————————————
+# ———————————— GLOBAL ANALYSIS ————————————
 
 # --- Helper: Parse Error JSON ---
-def _extract_error_summary(summary_path,
-                           variables: list = ["u", "v", "p"],
-                           metrics: list = ["L2", "L_inf", "MSE"],
-                           aggregate_metrics: list = ["mean_L2", "max_L_inf"]):
+def _extract_train_error_summary(summary_path,
+                                 variables: list = ["u", "v", "p"],
+                                 metrics: list = ["L2", "L_inf", "MSE"],
+                                 aggregate_metrics: list = ["mean_L2", "max_L_inf"]):
     """
-    Extract the entire summary.json into a tidy DataFrame without filtering or averaging.
+    Extract the entire summary_train.json into a tidy DataFrame.
     Each row represents one variable/metric or aggregate-metric value for a single run.
     Returns a DataFrame with columns [ab, a, b, n, variable, metric, value].
     """
@@ -478,7 +470,6 @@ def _extract_error_summary(summary_path,
     for data in errors.values():
         a = float(data["parameters"]["a"])
         b = float(data["parameters"]["b"])
-        n = int(data["parameters"]["n"])
 
         for var in variables:
             for met in metrics:
@@ -486,7 +477,6 @@ def _extract_error_summary(summary_path,
                     "ab": f'({a}, {b})',
                     "a": a,
                     "b": b,
-                    "n": n,
                     "variable": var,
                     "metric": met,
                     "value": float(data[var][met]),
@@ -496,7 +486,6 @@ def _extract_error_summary(summary_path,
                 "ab": f'({a}, {b})',
                 "a": a,
                 "b": b,
-                "n": n,
                 "variable": "aggregate",
                 "metric": aggmetric,
                 "value": float(data["aggregate"][aggmetric]),
@@ -505,34 +494,34 @@ def _extract_error_summary(summary_path,
     if len(rows) == 0:
         raise ValueError("No error data was found in the summary file.")
 
-    return pd.DataFrame(rows).sort_values(by=["a", "b", "n", "variable", "metric"], ignore_index=True)
+    return pd.DataFrame(rows).sort_values(by=["a", "b", "variable", "metric"], ignore_index=True)
 
 
 # --- Error Comparison Point Plots ---
 def plot_error_comparison(summary_path, output_dir, parameter, 
-                          fixed_ab: list = None, fixed_n = None):
+                          fixed_ab: list = None, fixed_strat: str = None):
     """
     Compare error across all runs, with a specified parameter as the axis. The free parameter can be fixed or averaged.
     Args:
         summary_path: path to summary.json containing errors across runs
         output_dir: path to folder to save plots
-        parameter: string specifying the parameter of interest, choices = ["n", "a", "b", "ab"]
-        fixed_ab: specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
-        fixed_n:  specified value of n to use across (a,b); discards other n. If None, takes average errors across all n. Requires variable!="n".
+        parameter: string specifying the parameter of interest, choices = ["ab", "a", "b", "strategy"]
+        fixed_ab:  specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
+        fixed_strat: specified name of a prediction strategy to use across (a,b); discards other strategies. If None, takes average errors across all strategies. Requires variable!="".
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Parse args
-    parameter_choices = ["n", "a", "b", "ab"]
+    parameter_choices = ["ab", "a", "b", "strategy"]
     if parameter not in parameter_choices:
         raise ValueError(f"Received parameter = {parameter}, but must be one of {parameter_choices}")
     if fixed_ab is not None and len(fixed_ab) != 2:
         raise ValueError(f"fixed_ab must be a list of length 2; received {fixed_ab}.")
-    if parameter == "n":
-        if fixed_n is not None:
+    if parameter == "strategy":
+        if fixed_strat is not None:
             raise ValueError(f"fixed_n is not compatible with parameter={parameter}.")
-    if parameter != "n":
+    if parameter != "strategy":
         if fixed_ab is not None:
             raise ValueError(f"fixed_ab is not compatible with parameter={parameter}.")
     
@@ -542,26 +531,26 @@ def plot_error_comparison(summary_path, output_dir, parameter,
     AGGREGATE_METRICS = ["mean_L2", "max_L_inf"]
     
     PARAMETER_LABELS = {
-        "n": "number of labeled training points",
         "a": "ellipse width (a)",
         "b": "ellipse height (b)",
-        "ab": "ellipse geometry (a, b)"
+        "ab": "ellipse geometry (a, b)",
+        "strategy": "PINN prediction strategy",
     }
 
-    error_df = _extract_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
+    error_df = _extract_train_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
 
     # filter to specified value of free parameter, if applicable
     if fixed_ab is not None:
         error_df = error_df[(error_df["a"].astype(float) == float(fixed_ab[0])) & (error_df["b"].astype(float) == float(fixed_ab[1]))]
-    if fixed_n is not None:
-        error_df = error_df[error_df["n"].astype(int) == int(fixed_n)]
+    if fixed_strat is not None:
+        error_df = error_df[error_df["strategy"].astype(str) == fixed_strat]
 
     if error_df.empty:
         raise ValueError("No matching runs were found for the requested summary selection.")
 
     # index by parameter of interest (axis)
-    if parameter == "n":
-        error_df["parameter_value"] = error_df["n"]
+    if parameter == "strategy":
+        error_df["parameter_value"] = error_df["strategy"]
         averaging = fixed_ab is None
     else:
         error_df["parameter_value"] = error_df["a"]
@@ -569,7 +558,7 @@ def plot_error_comparison(summary_path, output_dir, parameter,
             error_df["parameter_value"] = error_df["b"]
         elif parameter == "ab":
             error_df["parameter_value"] = error_df.apply(lambda row: f"({row['a']}, {row['b']})", axis=1)
-        averaging = fixed_n is None
+        averaging = fixed_strat is None
 
     if averaging:
         error_df = error_df.groupby(["parameter_value", "variable", "metric"], observed=True, as_index=False)["value"].mean()
@@ -599,14 +588,14 @@ def plot_error_comparison(summary_path, output_dir, parameter,
         # label based on args
         title = f"{metric} error across {parameter}"
         fname = f"errors_by_{parameter}_{metric}"
-        if fixed_n:
-            title += f", (where n={fixed_n})"
-            fname += f"_n{fixed_n}"
+        if fixed_strat:
+            title += f", (, {fixed_strat} prediction)"
+            fname += f"_{fixed_strat}"
         elif fixed_ab:
             title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
             fname += f"_a{fixed_ab[0]}_b{fixed_ab[1]}"
         else:
-            averaged_across = "ab" if parameter == "n" else "n"
+            averaged_across = "ab" if parameter == "strategy" else "strategy"
             title += f", averaged across {averaged_across}"
         fname += ".png"
             
@@ -635,14 +624,14 @@ def plot_error_comparison(summary_path, output_dir, parameter,
         # label based on args
         title = f"{aggmetric} error of all outputs, across {parameter}"
         fname = f"errors_by_{parameter}_{aggmetric}"
-        if fixed_n:
-            title += f", (where n={fixed_n})"
-            fname += f"_n{fixed_n}"
+        if fixed_strat:
+            title += f", (, {fixed_strat} prediction)"
+            fname += f"_{fixed_strat}"
         elif fixed_ab:
             title += f" (where a={fixed_ab[0]}, b={fixed_ab[1]})"
             fname += f"_{aggmetric}_a{fixed_ab[0]}_b{fixed_ab[1]}"
         else:
-            averaged_across = "ab" if parameter == "n" else "n"
+            averaged_across = "ab" if parameter == "strategy" else "strategy"
             title += f", averaged across {averaged_across}"
         fname += ".png"
             
@@ -685,7 +674,7 @@ def plot_error_comparison_2d(summary_path, output_dir, index_parameter="n", col_
     }
     
     # cols are a, b, n, variable, metric, value
-    error_df = _extract_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
+    error_df = _extract_train_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
     
     # Create plot for each metric for each variable
     for var in VARS:

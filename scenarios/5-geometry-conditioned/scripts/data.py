@@ -17,7 +17,7 @@ import deepxde as dde
 # ———————————————— DOMAIN DATASET ————————————————
 
 # --- Sample Domain Points - Single Geometry ---
-def sample_domain_points(cfg, a, b):
+def _sample_domain_points_single(cfg, a, b):
     """
     Helper function that constructs a given geometry, samples interior and boundary points,
     concatenates the given (a,b) to the data, and returns arrays.
@@ -46,7 +46,7 @@ def sample_domain_points(cfg, a, b):
 
 
 # --- Create Manual Domain Dataset - All Train Geometries ---
-def build_interior_dataset(cfg):
+def build_domain_dataset(cfg):
     """
     Concatenate domain points across all training geometries.
     Returns:
@@ -57,7 +57,7 @@ def build_interior_dataset(cfg):
     boundary_list = []
     
     for (a, b) in cfg.train_geometries:
-        interior_data, boundary_data = sample_domain_points(cfg, a, b)
+        interior_data, boundary_data = _sample_domain_points_single(cfg, a, b)
         interior_list.append(interior_data)
         boundary_list.append(boundary_data)
     
@@ -72,14 +72,14 @@ def build_interior_dataset(cfg):
 
 
 # --- Sample Labeled Data Points ---
-def sample_labeled_points(fem_data, n_max, cfg):
+def _sample_labeled_points_single(fem_data, n, cfg, components = [0, 1, 2]):
     """
-    Build a single nested sequence of up to n_max labeled points for one geometry.
-    Returns subset of fem_data, shape (n_max, 5), ordered by selection priority. 
+    Build a single nested sequence of n labeled points for one geometry.
+    Returns subset of fem_data, shape (n, 2 + len(components)), ordered by selection priority. 
     Each prefix of length n is the labeled set for that n.
     """
-    if n_max <= 0:
-        assert f"n = {n_max} (must be > 0)"
+    if n <= 0:
+        raise ValueError(f"n = {n} (must be > 0)")
 
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
@@ -95,8 +95,8 @@ def sample_labeled_points(fem_data, n_max, cfg):
     scores = raw_scores / raw_scores.sum()
 
     generator = np.random.default_rng(seed=cfg.seed)
-    n_scored  = int(n_max * (1 - cfg.uniform_frac))
-    n_uniform = n_max - n_scored
+    n_scored  = int(n * (1 - cfg.uniform_frac))
+    n_uniform = n - n_scored
 
     # Sample scored indices first
     idx_scored = generator.choice(M, size=n_scored, replace=False, p=scores)
@@ -105,28 +105,41 @@ def sample_labeled_points(fem_data, n_max, cfg):
     remaining_indices = np.setdiff1d(np.arange(M), idx_scored)
     idx_uniform = generator.choice(remaining_indices, size=n_uniform, replace=False)
 
-    # Combine: scored first, then uniform (guaranteed exactly n_max points)
+    # Combine: scored first, then uniform (guaranteed exactly n points)
     all_idx = np.concatenate([idx_scored, idx_uniform])
+    
+    # select and copy the labeled points
+    labeled_pts = fem_data[all_idx].copy()
 
-    return fem_data[all_idx]
+    # create a NaN column for excluded components
+    nan_col = np.full(labeled_pts.shape[0], np.nan)
+
+    # components: 0->u (col 2), 1->v (col 3), 2->p (col 4)
+    for c in [0, 1, 2]:
+        if c not in components:
+            labeled_pts[:, c + 2] = nan_col
+
+    return labeled_pts
 
 
-def build_labeled_dataset(fem_data_dict, n_max, cfg):
+def build_labeled_dataset(fem_data_dict, n, cfg, components = [0, 1, 2]):
     """
-    Concatenate labeled dataset across all geometries in the fem data.
+    Concatenate labeled datasets (n points per geometry) across all geometries in the fem data.
     Blind to train/test split; fem_data_dict should only contain the desired set of geometries.
     Args:
-        cfg: custom config object
         fem_data_dict: dictionary mapping geo_tag --> fem_data array of shape (N, 5) = [x,y,u,v,p]
+        n: the number of labeled points to sample per geometry
+        cfg: custom config object
+        components: list of components to sample (u=0, v=1, p=2)
     Returns:
-        all_labeled_pts: array of shape (n_labeled_train * n_geometries, 7) = [x,y,a,b, u,v,p]
+        all_labeled_pts: array of shape (n_labeled * n_geometries, 7) = [x,y,a,b, u,v,p]
     """
     
     labeled_list = []
     
     for (a, b), fem_data in fem_data_dict.items():
         
-        labeled_pts = sample_labeled_points(fem_data, n_max, cfg)
+        labeled_pts = _sample_labeled_points_single(fem_data, n, cfg, components)
         
         # Insert (a, b) values after (x, y)
         ab_cols = np.full((labeled_pts.shape[0], 2), [a, b])

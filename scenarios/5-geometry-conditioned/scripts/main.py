@@ -23,8 +23,8 @@ import deepxde as dde
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import solve_stenosis, fem_predict
-from data import build_interior_dataset, build_labeled_dataset
-from pinn import build_model, train_model, restore_model, pinn_predict
+from data import build_domain_dataset, build_labeled_dataset
+from pinn import build_model, train_model, restore_model, pinn_predict, pinn_finetune
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
                       plot_output_heatmaps, plot_error_heatmaps,
@@ -80,8 +80,9 @@ def load_case_errors(cfg: StenosisConfig, n: int):
 
 
 # ———————————————— SUB-FUNCTIONS ————————————————
+# perform lazy execution of functions from other scripts & save results
 
-# --- Generate Mesh ---
+# --- 1. Generate Mesh ---
 def mesh(cfg: StenosisConfig, a: float, b: float, force_mesh: bool):
     
     tag = cfg.geo_tag(a, b)
@@ -97,7 +98,7 @@ def mesh(cfg: StenosisConfig, a: float, b: float, force_mesh: bool):
     return msh_file
 
 
-# --- FEM Solve ---
+# --- 2. FEM Solve ---
 def fem(cfg: StenosisConfig, a: float, b: float, msh_file: Path, force_fem: bool):
 
     tag = cfg.geo_tag(a, b)
@@ -133,17 +134,42 @@ def fem(cfg: StenosisConfig, a: float, b: float, msh_file: Path, force_fem: bool
     return fem_data
 
 
-# --- Sample Labeled Points Across Geometries ---
-def sample_labeled_data(cfg: StenosisConfig, fem_data_dict_train: dict, 
-                        fem_data_dict_test: dict, force_resample: bool):
+# --- 3. Generate Domain Dataset ---
+def sample_domain_data(cfg: StenosisConfig, fem_data_dict_train: dict, 
+                       fem_data_dict_test: dict, force_resample: bool):
 
-    train_file = cfg.fem_dir / f"labeled_data_train_geometries.csv"
-    test_file  = cfg.fem_dir / f"labeled_data_test_geometries.csv"
+    interior_file = cfg.data_dir / f"interior_data.csv"
+    boundary_file = cfg.data_dir / f"boundary_data.csv"
+    
+    if force_resample or not interior_file.exists() or not boundary_file.exists():
+        print(f"Sampling domain training points, will be saved to two files: {interior_file}, and {boundary_file}")
+        all_interior_data, all_boundary_data = build_domain_dataset(cfg)
+        np.savetxt(interior_file, all_interior_data, delimiter=",")
+        np.savetxt(boundary_file, all_boundary_data, delimiter=",")
+    else:
+        print(f"Skipping domain training points sampling since both points files found: {interior_file.name}, and {boundary_file.name}")
+    
+    # Reload regardless
+    all_interior_data = np.loadtxt(interior_file, delimiter=",")
+    all_boundary_data  = np.loadtxt(boundary_file, delimiter=",")
+    
+    return all_interior_data, all_boundary_data
+
+
+# --- 3. Sample Labeled Points Across Geometries ---
+def sample_labeled_data(cfg: StenosisConfig, 
+                        fem_data_dict_train: dict, fem_data_dict_test: dict, 
+                        force_resample: bool,
+                        train_components = [0, 1, 2], test_components = [0, 1, 2],):
+
+    train_file = cfg.data_dir / f"labeled_data_train_geometries.csv"
+    test_file  = cfg.data_dir / f"labeled_data_test_geometries.csv"
     
     # for training
     if force_resample or not train_file.exists():
         print(f"Sampling labeled training points, will be saved to: {train_file}")
-        all_labeled_data = build_labeled_dataset(fem_data_dict_train, cfg.n_labeled_train, cfg)
+        all_labeled_data = build_labeled_dataset(fem_data_dict_train, cfg.n_labeled_train, 
+                                                 cfg, components=train_components)
         np.savetxt(train_file, all_labeled_data, delimiter=",")
     else:
         print(f"Skipping labeled training points sampling since existing points file found: {train_file.name}")
@@ -151,7 +177,8 @@ def sample_labeled_data(cfg: StenosisConfig, fem_data_dict_train: dict,
     # for testing fine-tuning
     if force_resample or not test_file.exists():
         print(f"Sampling observations for testing, will be saved to: {test_file}")
-        all_labeled_data = build_labeled_dataset(fem_data_dict_test, cfg.n_labeled_test, cfg)
+        all_labeled_data = build_labeled_dataset(fem_data_dict_test, cfg.n_labeled_test, 
+                                                 cfg, components=test_components)
         np.savetxt(test_file, all_labeled_data, delimiter=",")
     else:
         print(f"Skipping observations for testing sampling since existing points file found: {test_file.name}")
@@ -161,9 +188,9 @@ def sample_labeled_data(cfg: StenosisConfig, fem_data_dict_train: dict,
     all_labeled_data_test  = np.loadtxt(test_file, delimiter=",")
     
     return all_labeled_data_train, all_labeled_data_test
-        
 
-# --- Train PINN ---
+
+# --- 4. Train PINN ---
 def pinn_train(interior_data, boundary_data, labeled_data, cfg: StenosisConfig, force_pinn: bool):
     
     model_prefix = cfg.pinn_dir / "model"
@@ -177,73 +204,169 @@ def pinn_train(interior_data, boundary_data, labeled_data, cfg: StenosisConfig, 
         print(f"Training PINN, solution to be saved to: {model_prefix}")
         cfg.clear_dir(cfg.pinn_dir)     # clear any old models
         model = build_model(interior_data, boundary_data, labeled_data, cfg)
-        final_model = train_model(model, model_prefix, cfg)
+        trained_model = train_model(model, model_prefix, cfg)
     else:
         print(f"Skipping PINN since existing model(s) found: {existing_models}")
         model = build_model(interior_data, boundary_data, labeled_data, cfg)
-        final_model = restore_model(model, model_prefix, cfg)
+        trained_model = restore_model(model, model_prefix, cfg)
     
-    return final_model
+    return trained_model
 
 
-# --- Analysis & Visualization ---
-def analysis(fem_data_dict_train, fem_data_dict_test, model, labeled_data, cfg: StenosisConfig):
+# --- 5. PINN Predict on Training Set ---
+def pinn_predict_train(fem_data_dict_train, model, cfg: StenosisConfig):
     """
-    Perform a variety of analyses and visualizations to evaluate the trained PINN
+    Evaluate PINN on training geometries using one-shot prediction. Saves errors.
     Args:
         fem_data_dict_train: dictionary mapping training geo_tags --> fem_data array of shape (N, 5) = [x,y,u,v,p] 
-        fem_data_dict_test:  dictionary mapping testing geo_tags -->  fem_data array of shape (N, 5) = [x,y,u,v,p] 
         model: DeepXDE model object holding the trained and frozen PINN
         labeled_data: array of shape (n_labeled_train * n_geometries, 7) = [x,y,a,b, u,v,p]
         cfg: custom config object
+    Returns:
+        pinn_data_dict_train: dictionary mapping training geo_tags --> pinn_data array of shape (N, 5) = [x,y,u,v,p]
     """
+    all_errors_train = {}
+    pinn_data_dict_train = {}
     
-    all_errors = {}
-    
-    # TRAIN geometries - per-geometry analyses
     for (a, b), fem_data in fem_data_dict_train.items():
         
         output_dir = cfg.plots_geo_dir(a, b)
         tag = cfg.geo_tag(a, b)
         
-        # one-shot PINN prediction
+        # prediction
         query = fem_data[:, 0:4]    # [x,y,a,b]
-        pinn_data = pinn_predict(model, query)
+        pinn_data = pinn_predict(model, query)  # one-shot prediction
+        pinn_data_dict_train[(a, b)] = pinn_data
         
         # errors
         errors = compute_errors(pinn_data, fem_data)
         save_errors(errors, output_dir, a, b)
-        all_errors[tag] = errors
-        all_errors[tag]["parameters"] = {"a": a, "b": b}
-        all_errors[tag]["partition"] = "train"
+        all_errors_train[tag] = errors
+        all_errors_train[tag]["parameters"] = {"a": a, "b": b}
+    
+    # Log errors
+    cfg.summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = cfg.results_dir / "summary_train.json"
+    with summary_path.open("w") as f:
+        json.dump(all_errors_train, f, indent=2)
         
-        # plot
+    return pinn_data_dict_train, summary_path
+
+
+# --- 6. PINN Predict Using Different Strategies ---
+def pinn_predict_test(fem_data_dict_test, model, observation_data, cfg: StenosisConfig):
+    """
+    Ablation study on predicting test cases with a pretrained PINN. Saves errors.
+    Args:
+        fem_data_dict_test:  dictionary mapping testing geo_tags -->  fem_data array of shape (N, 5) = [x,y,u,v,p] 
+        model: DeepXDE model object holding the trained and frozen PINN
+        observation_data: array of shape (n_labeled_train * n_geometries, 7) = [x,y,a,b, u,v,p]
+        cfg: custom config object
+    Prediction Strategies Ablation:
+        1. baseline:  one-shot forward pass prediction
+        2. +finetune: fine-tuning with test case sparse observations
+        3. +anchor:   fine-tuning + anchored weights (regularization)
+        4. +hardbc:   fine-tuning + anchored weights + hard BC enforcement
+    Returns:
+        pinn_data_dict_test: dictionary mapping test geo_tags --> stragies --> pinn_data array of shape (N, 5) = [x,y,u,v,p]
+    """
+    
+    all_errors_test = {cfg.geo_tag(a, b): {} for (a, b) in cfg.test_geometries}
+    pinn_data_dict_test = {(a, b): {} for (a, b) in cfg.test_geometries}
+    
+    for (a, b), fem_data in fem_data_dict_test.items():
+        
+        print(f"Predicting on test geometry ({a}, {b}), strategy = baseline")
+        
+        tag = cfg.geo_tag(a, b)
+        query = fem_data[:, 0:4]    # [x,y,a,b]
+        
+        # Strategy 1: baseline one-shot forward pass
+        output_dir = cfg.plots_geo_dir(a, b) / "baseline"
+        pinn_data = pinn_predict(model, query)
+        pinn_data_dict_test[(a, b)]["baseline"] = pinn_data
+        
+        errors = compute_errors(pinn_data, fem_data)
+        save_errors(errors, output_dir, a, b)
+        all_errors_test[tag]["baseline"] = errors
+        
+        # Strateges 2-4: fine-tuning ± weight anchor ± hard BCs
+        for name, params in cfg.finetune_strategies.items():
+            
+            print(f"Predicting on test geometry ({a}, {b}), strategy = {name}")
+            
+            output_dir = cfg.plots_geo_dir(a, b) / name
+            finetuned_model = pinn_finetune(model, observation_data, query,
+                                      cfg, a, b,
+                                      weight_anchor=params["anchor"],
+                                      hard_bc=params["hardbc"])
+            
+            pinn_data = pinn_predict(finetuned_model, query)
+            pinn_data_dict_test[(a, b)][name] = pinn_data
+        
+            errors = compute_errors(pinn_data, fem_data)
+            save_errors(errors, output_dir, a, b)
+            all_errors_test[tag][name] = errors
+    
+    # Log errors summary
+    cfg.summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = cfg.results_dir / "summary_test.json"
+    with summary_path.open("w") as f:
+        json.dump(all_errors_test, f, indent=2)
+        
+    return pinn_data_dict_test, summary_path
+
+
+# --- 7. Visualization ---
+def visualization(pinn_data_dict_train, pinn_data_dict_test, 
+                  fem_data_dict_train, fem_data_dict_test, labeled_data, 
+                  train_error_summary_path, test_error_summary_path,
+                  cfg: StenosisConfig):
+    """
+    Perform a variety of analyses and visualizations to evaluate the trained PINN
+    Args:
+        pinn_data_dict_train: dictionary mapping training geo_tags -->  pinn_data array of shape (N, 5) = [x,y,u,v,p] 
+        pinn_data_dict_test:  dictionary mapping testing geo_tags  -->  pinn_data array of shape (N, 5) = [x,y,u,v,p] 
+        fem_data_dict_train:  dictionary mapping training geo_tags -->  fem_data array of shape (N, 5) = [x,y,u,v,p] 
+        fem_data_dict_test:   dictionary mapping testing geo_tags  -->  fem_data array of shape (N, 5) = [x,y,u,v,p] 
+        labeled_data: array of shape (n_labeled_train * n_geometries, 7) = [x,y,a,b, u,v,p]
+        cfg: custom config object
+    """
+    
+    # TRAIN geometries - per-geometry analyses
+    for (a, b) in pinn_data_dict_train.keys():
+        
+        output_dir = cfg.plots_geo_dir(a, b)
+        tag = cfg.geo_tag(a, b)
+        pinn_data = pinn_data_dict_train[(a, b)]
+        fem_data = fem_data_dict_train[(a, b)]
+        
         plot_domain(cfg, a, b, output_dir, labeled_data)
         plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
         plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
     
-    # TEST geometries - per-geometry analyses
-    for (a, b), fem_data in fem_data_dict_test.items():
+    
+    # TEST geometries - per-geometry, per-strategy analyses
+    for (a, b) in pinn_data_dict_test.keys():
         
-        output_dir = cfg.plots_geo_dir(a, b)
-        tag = cfg.geo_tag(a, b)
-        
-        # one-shot PINN prediction
-        query = fem_data[:, 0:4]
-        pinn_data = pinn_predict(model, query)
-        errors = compute_errors(pinn_data, fem_data)
-        save_errors(errors, output_dir, a, b)
-        all_errors[tag] = errors
-        all_errors[tag]["parameters"] = {"a": a, "b": b}
-        all_errors[tag]["partition"] = "test"
-        
-        # plot
         plot_domain(cfg, a, b, output_dir, labeled_pts=None)     # TODO add test observation points here
+        
+        # baseline
+        output_dir = cfg.plots_geo_dir(a, b) / "baseline"
+        pinn_data = pinn_data_dict_test[(a, b)]["baseline"]
+        fem_data = fem_data_dict_test[(a, b)]
+        
         plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
         plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
         
-        # fine-tuned PINN prediction on test case observations — TODO
-        #
+        # fine-tuning strategies
+        for strategy in cfg.finetune_strategies.keys():
+            output_dir = cfg.plots_geo_dir(a, b) / strategy
+            pinn_data = pinn_data_dict_test[(a, b)][strategy]
+            
+            plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
+            plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir, a, b, separate_plots=False)
+        
     
     print(f"Per-Geometry analysis and visualization complete.")
     
@@ -251,16 +374,11 @@ def analysis(fem_data_dict_train, fem_data_dict_test, model, labeled_data, cfg: 
     
     # plot loss curves
     loss_data = np.loadtxt(cfg.pinn_dir / "loss.dat", delimiter=" ", comments="#")
-    plot_loss_curves(loss_data, cfg.plots_dir)
-    
-    # log errors
-    cfg.summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = cfg.results_dir / "summary.json"
-    with summary_path.open("w") as f:
-        json.dump(all_errors, f, indent=2)
+    plot_loss_curves(loss_data, cfg.summary_dir)
     
     # compare errors
-    plot_error_comparison(summary_path, cfg.summary_dir, parameter="ab", fixed_n=cfg.n_labeled_train)
+    # plot_error_comparison(train_error_summary_path, cfg.summary_dir, parameter="ab", fixed_n=cfg.n_labeled_train)
+    # plot_error_comparison(test_error_summary_path,  cfg.summary_dir, parameter="ab", fixed_n=cfg.n_labeled_test)
     
     # log config
     config_dict = cfg.config_as_dict()
@@ -275,6 +393,7 @@ def analysis(fem_data_dict_train, fem_data_dict_test, model, labeled_data, cfg: 
     
 
 # ———————————————— MAIN ————————————————
+# top-level overview of pipeline & handle args
 
 def main():
     
@@ -302,8 +421,8 @@ def main():
     
     # Print to terminal
     print(f"\n{'='*50}\nEXECUTION PLAN\n{'='*50}")
-    print(f"\nTrain geometries={cfg.train_geometries}\nn_labeled_train={cfg.n_labeled_train}")
-    print(f"\nTest geometries{cfg.test_geometries}\nn_labeled_test={cfg.n_labeled_test}")
+    print(f"\nTrain geometries={cfg.train_geometries}\nn_labeled={cfg.n_labeled_train}")
+    print(f"\nTest geometries{cfg.test_geometries}\nn_labeled={cfg.n_labeled_test}, components={cfg.test_observation_components}")
     if args.analysis_only:
         print(f"\n1. Analysis ONLY. Skipping mesh, FEM, and PINN. Analyzing complete cases only.")
     else:
@@ -314,41 +433,54 @@ def main():
         print(f"5. Test PINN on {len(cfg.test_geometries)} testing geometries (forced = {args.force_pinn})")
     
     
-    # 
-    
-    # Stage 1-2: Generate meshes and ground-truth FEM for train + test geometries
-    cfg.make_all_dirs()
-    
-    fem_data_dict_train = {}
-    fem_data_dict_test  = {}
-    
-    for (a, b) in cfg.train_geometries:
-        msh_file = mesh(cfg, a, b, args.force_mesh)
-        fem_data = fem(cfg, a, b, msh_file, args.force_fem)
-        fem_data_dict_train[(a, b)] = fem_data
-    
-    for (a, b) in cfg.test_geometries:
-        msh_file = mesh(cfg, a, b, args.force_mesh)
-        fem_data = fem(cfg, a, b, msh_file, args.force_fem)
-        fem_data_dict_test[(a, b)] = fem_data
-
-    
-    # Stage 3: Assemble data
-    interior_data, boundary_data = build_interior_dataset(cfg)
-    labeled_data_train, labeled_data_test = sample_labeled_data(cfg, fem_data_dict_train,
-                                                                      fem_data_dict_test, args.force_resample)
-    
-    # Stage 4: Build and train PINN
-    model = pinn_train(interior_data, boundary_data, labeled_data_train, cfg, args.force_pinn)
-    
-    
-    # Stage 5: Perform analysis & visualization
-    analysis(fem_data_dict_train, fem_data_dict_test, model, labeled_data_train, cfg)
-    
-    
-    # Perform only analysis if requested        TODO
+    # Perform only analysis on complete cases if requested
     if args.analysis_only:
-        pass
+        pass                    # TODO
+    
+    else:
+    
+        # Stage 1-2: Generate meshes and ground-truth FEM for train + test geometries
+        cfg.make_all_dirs()
+        
+        fem_data_dict_train = {}
+        fem_data_dict_test  = {}
+        
+        for (a, b) in cfg.train_geometries:
+            msh_file = mesh(cfg, a, b, args.force_mesh)
+            fem_data = fem(cfg, a, b, msh_file, args.force_fem)
+            fem_data_dict_train[(a, b)] = fem_data
+        
+        for (a, b) in cfg.test_geometries:
+            msh_file = mesh(cfg, a, b, args.force_mesh)
+            fem_data = fem(cfg, a, b, msh_file, args.force_fem)
+            fem_data_dict_test[(a, b)] = fem_data
+
+        
+        # Stage 3: Assemble data
+        interior_data, boundary_data = sample_domain_data(cfg, fem_data_dict_train, fem_data_dict_test, args.force_resample)
+        labeled_data_train, labeled_data_test = sample_labeled_data(cfg, 
+                                                                    fem_data_dict_train,
+                                                                    fem_data_dict_test, 
+                                                                    args.force_resample,
+                                                                    train_components=[0, 1, 2],     # currently hardcoded train on all u,v,p
+                                                                    test_components=cfg.test_observation_components)
+        
+        # Stage 4: Build and train PINN
+        model = pinn_train(interior_data, boundary_data, labeled_data_train, cfg, args.force_pinn)
+        
+        # Stage 5: PINN predict on training datasets
+        pinn_data_dict_train, summary_train = pinn_predict_train(fem_data_dict_train, model, cfg)
+        
+        # Stage 6: PINN predict on testing datasets, multiple strategies
+        pinn_data_dict_test, summary_test = pinn_predict_test(fem_data_dict_test, model, labeled_data_test, cfg)
+        
+        # Stage 7: Analysis and Visualization
+        visualization(pinn_data_dict_train, pinn_data_dict_test,
+                      fem_data_dict_train, fem_data_dict_test,
+                      labeled_data_train,
+                      summary_train, summary_test, cfg)
+        
+        print(f"\n{'='*50}\nMAIN PIPELINE COMPLETE\n{'='*50}")
     
 
 
