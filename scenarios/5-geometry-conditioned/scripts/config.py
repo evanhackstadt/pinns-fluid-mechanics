@@ -29,13 +29,18 @@ class StenosisConfig:
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
             (0.4, 0.3),
-            (0.6, 0.5)
+            (0.5, 0.4),
+            (0.6, 0.6)
         ]
     )
     
     test_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (0.5, 0.4)
+            (0.45, 0.35),
+            (0.55, 0.45),
+            (0.60, 0.65),
+            (0.65, 0.60),
+            (0.65, 0.65),
         ]
     )
     
@@ -52,9 +57,7 @@ class StenosisConfig:
     seed: int = 0
     n_interior: int = 2000      # default 2000, can tune. Fed to PDE loss.
     n_boundary: int = 800       # default 800, can tune. Fed to BC loss.
-    n_test: int = 1400          # default 2000, can tune. Sampled from both interior & boundary.
     n_labeled_train: int = 10   # default 10, can tune.
-    n_labeled_test:  int = 3    # default 3, can tune.
     uniform_frac: float = 0.3
     
     layers: List[int] = field(default_factory=lambda: [4, 128, 128, 3])     # (x,y,a,b)->...->(u,v,p)
@@ -65,8 +68,10 @@ class StenosisConfig:
     loss_weights_adam: List[float] = field(     # will be reweighted dynamically during training
         default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
                                  5, 5,          # bc_inlet_u, bc_inlet_v
-                                 25, 25,        # bc_wall_u, bc_wall_v  <-- important hard constraints
-                                 25,            # bc_outlet_p
+                                 # no-slip walls are important hard constraints:
+                                 25, 25,        # bc_wall_u, bc_wall_v
+                                 25, 25,        # bc_obstacle_u, bc_obstacle_v
+                                 5,             # bc_outlet_p
                                  10, 10, 10]    # bc_obs_u, bc_obs_v, bc_obs_p
     )
     
@@ -75,21 +80,48 @@ class StenosisConfig:
     gtol_lbfgs: float = 1e-10   # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0
     
-    # prediction & fine-tuning
-    test_observation_components: List[int] = field(
-        default_factory=lambda: [1]   # 0=u, 1=v, 2=p; currently just use v to simulate doppler
-    )
-    test_observation_loss_weight: float = 100   # per component
-    n_finetune: int = 1000
-    lr_finetune: float = 1e-5
-    lambda_anchor: float = 0.01     # regularization strength, default=0.01
+    # fine-tuning
     finetune_strategies: Dict = field(
         default_factory=lambda: {
-            "+finetune": {"anchor": False, "hardbc": False},
-            "+anchor":   {"anchor": True,  "hardbc": False},
-            "+hardbc":   {"anchor": True,  "hardbc": True},
+            "finetune": {
+                "finetune": True, 
+                "anchor": False, 
+                "hardbc": False
+            },
+            "finetune+anchor": {
+                "finetune": True, 
+                "anchor": True, 
+                "hardbc": False
+            },
+            "finetune+anchor+hardbc": {
+                "finetune": True, 
+                "anchor": True, 
+                "hardbc": True
+            },
+            "finetune+hardbc": {
+                "finetune": True, 
+                "anchor": False, 
+                "hardbc": True
+            },
+            "hardbc": {
+                "finetune": False, 
+                "anchor": False, 
+                "hardbc": True
+            },
         }
     )
+    n_adam_finetune: int = 1000
+    lr_finetune: float = 5e-6
+    n_labeled_test:  int = 5    # default 3, can tune.
+    test_observation_components: List[int] = field(
+        # 0=u, 1=v, 2=p; currently just use v to simulate doppler
+        default_factory=lambda: [1]
+    )
+    test_observation_weights: List[float] = field(
+        # bc_obs_v - add terms if including more components
+        default_factory=lambda: [20]
+    )
+    lambda_anchor: float = 1e-5     # regularization strength, default=1e-5
     
     
     # --- FEM ---
@@ -111,16 +143,15 @@ class StenosisConfig:
         meshes/
             stenosis_{geo_tag}.msh
         results/
-            errors.json
             config_log.json
+            error_summary/
             pinn/
                 training_log.json
                 *.pt
                 *.dat
-            plots/
-                summary/
-                train/...geos...
-                test/...geos...
+                loss_curves*.png
+            test_geometries/...geos.../...strategies.../
+            train_geometries/...geos.../
         scripts/
     '''
     
@@ -146,13 +177,9 @@ class StenosisConfig:
     def pinn_dir(self) -> Path:
         return self.results_dir / "pinn"
     
-    @property
-    def plots_dir(self) -> Path:
-        return self.results_dir / "plots"
-    
     @property 
     def summary_dir(self) -> Path:
-        return self.plots_dir / "summary"
+        return self.results_dir / "error_summary"
     
     
     def geo_tag(self, a, b):
@@ -172,14 +199,14 @@ class StenosisConfig:
         else:
             return None
     
-    def plots_geo_dir(self, a, b):
+    def geo_dir(self, a, b):
         if self.train_or_test(a, b) is not None:
-            return self.plots_dir / self.train_or_test(a, b) / self.geo_tag(a, b)
+            return self.results_dir / self.train_or_test(a, b) / self.geo_tag(a, b)
         else:
             return None
     
     def plots_geo_strategy_dirs(self, a, b):
-        parent = self.plots_geo_dir(a, b)
+        parent = self.geo_dir(a, b)
         dirs = {"parent": parent, "baseline": parent / "baseline"}
         for strat in self.finetune_strategies:
             dirs[strat] = parent / strat
@@ -192,9 +219,13 @@ class StenosisConfig:
         self.meshes_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.pinn_dir.mkdir(parents=True, exist_ok=True)
-        self.plots_dir.mkdir(parents=True, exist_ok=True)
+        self.summary_dir.mkdir(parents=True, exist_ok=True)
+        
+        for strat in self.finetune_strategies.keys():
+            d = self.pinn_dir / strat
+            d.mkdir(parents=True, exist_ok=True)
         for (a, b) in self.train_geometries:
-            self.plots_geo_dir(a, b).mkdir(parents=True, exist_ok=True)
+            self.geo_dir(a, b).mkdir(parents=True, exist_ok=True)
         for (a, b) in self.test_geometries:
             for d in self.plots_geo_strategy_dirs(a, b).values():
                 d.mkdir(parents=True, exist_ok=True)

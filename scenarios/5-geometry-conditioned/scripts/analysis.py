@@ -34,19 +34,6 @@ COLOR_AGGREGATE = PALETTE_DEEP[5]
 COLOR_PDE   = PALETTE_DEEP[6]
 COLOR_BC    = PALETTE_DEEP[7]
 COLOR_VARIABLE_MAP = {"u": COLOR_U, "v": COLOR_V, "p": COLOR_P}
-LOSS_COLORS = {
-    "PDE_continuity": PALETTE_DEEP[0],
-    "PDE_x_momentum": PALETTE_DEEP[1],
-    "PDE_y_momentum": PALETTE_DEEP[2],
-    "BC_inlet_u": PALETTE_DEEP[3],
-    "BC_inlet_v": PALETTE_DEEP[4],
-    "BC_wall_u": PALETTE_DEEP[5],
-    "BC_wall_v": PALETTE_DEEP[6],
-    "BC_outlet_p": PALETTE_DEEP[7],
-    "BC_observed_u": PALETTE_DEEP[8],
-    "BC_observed_v": PALETTE_DEEP[9],
-    "BC_observed_p": "#8A2BE2",
-}
 FIG_DPI    = 200
 
 
@@ -117,97 +104,94 @@ def save_errors(errors, output_dir, a, b):
 
 
 # --- Loss Curves ---
-def plot_loss_curves(loss_data, output_dir):
+def plot_loss_curves(loss_data, output_dir, 
+                     loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
+                                         "BC (inlet u)", "BC (inlet v)", "BC (wall u)", "BC (wall v)",
+                                         "BC (obstacle u)", "BC (obstacle v)", "BC (outlet p)",
+                                         "BC (observed u)", "BC (observed v)", "BC (observed p)"]):
     """
-    Plot PDE loss and BC loss, as well as individual loss terms, for both train and test, over training iterations.
+    Plot PDE loss and BC loss, as well as individual loss terms, for training loss over iterations.
     Args:
         loss_data: array of shape (iters, 2*n_loss_terms + 1) with columns [iteration, **loss_train_terms, **loss_test_terms]
-        output_dir: path to the relevant plots folder to save plot
+        output_dir: Path to the directory in which to save the plot
+        loss_term_labels: optional list of labels corresponding to loss terms. Recommended for cases besides general training.
+                          If not provided, hardcoded terms = PDE cont, PDE xm/ym, BC in u/v, BC wall u/v, BC obst u/v, BC out p, BC obs u/v/p.
     """
-    # loss terms in order:
+    # all loss terms in order:
         #   PDE_continuity, PDE_x_momentum, PDE_y_momentum, 
-        #   BC_inlet_u, BC_inlet_v, BC_wall_u, BC_wall_v, BC_outlet_p,
+        #   BC_inlet_u, BC_inlet_v, 
+        #   BC_wall_u, BC_wall_v, 
+        #   BC_obstacle_u, BC_obstacle_v, 
+        #   BC_outlet_p,
         #   BC_data_observed_u, BC_data_observed_v, BC_data_observed_p
-    
+
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    
+    # Parse loss data
     n_terms = int((loss_data.shape[1] - 1) / 2)
-    
     if loss_data.shape[1] % 2 != 1:
-        raise ValueError("Problem parsing loss_data array. Expects an odd number of columns = steps + 2*n_loss_terms.")
+        raise ValueError("Problem parsing loss_data array. Expected an odd number of columns = [steps] + [2*n_loss_terms].")
+    if n_terms != len(loss_term_labels):
+        raise ValueError(f"Found {n_terms} in loss data but received {len(loss_term_labels)} labels.")
     
-    steps      = loss_data[:, 0]
-    loss_train = loss_data[:, 1:n_terms+1]
-    loss_test  = loss_data[:, n_terms+1:]
+    steps = loss_data[:, 0]
+    loss  = loss_data[:, 1:n_terms+1]    # train loss only
     
-    labels = {"train": loss_train, "test": loss_test}
-    
-    for label, loss in labels.items():
-        
-        pde_cont = loss[:, 0]
-        pde_x_m  = loss[:, 1]
-        pde_y_m  = loss[:, 2]
-        bc_i_u   = loss[:, 3]
-        bc_i_v   = loss[:, 4]
-        bc_w_u   = loss[:, 5]
-        bc_w_v   = loss[:, 6]
-        bc_o_p   = loss[:, 7]
-        if n_terms == 11:
-            bc_obs_u = loss[:, 8]
-            bc_obs_v = loss[:, 9]
-            bc_obs_p = loss[:, 10]
+    loss_terms = {}
+    for i, label in enumerate(loss_term_labels):
+        loss_terms[label] = loss[:, i]
 
-        fig, ax = plt.subplots(figsize=(10, 7), dpi=FIG_DPI)
+    # Plot
+    
+    # use visually-distinct colors: https://mokole.com/palette.html
+    LOSS_COLORS = ["#2f4f4f", "#8b4513", "#228b22",
+                   "#4b0082", "#ff0000", "#ffff00",
+                   "#00ff00", "#00ffff", "#0000ff",
+                   "#ff00ff", "#1e90ff", "#eee8aa", 
+                   "#ff69b4"]
+    
+    fig, ax = plt.subplots(figsize=(10, 7), dpi=FIG_DPI)
+    pde_terms = []
+    bc_terms = []
 
-        # use visually-distinct colors: https://mokole.com/palette.html
-        ax.semilogy(steps, pde_cont, color="#00008b", lw=1.5, label="PDE (continuity)")
-        ax.semilogy(steps, pde_x_m,  color="#1e90ff", lw=1.5, label="PDE (x-momentum)")
-        ax.semilogy(steps, pde_y_m,  color="#00ffff", lw=1.5, label="PDE (y-momentum)")
-        ax.semilogy(steps, bc_i_u,   color="#ff0000", lw=1.5, label="BC (inlet $u$)")
-        ax.semilogy(steps, bc_i_v,   color="#e1bb12", lw=1.5, label="BC (inlet $v$)")
-        ax.semilogy(steps, bc_w_u,   color="#00ff00", lw=1.5, label="BC (wall $u$)")
-        ax.semilogy(steps, bc_w_v,   color="#008000", lw=1.5, label="BC (wall $v$)")
-        ax.semilogy(steps, bc_o_p,   color="#2f4f4f", lw=1.5, label="BC (outlet $p$)")
-        if n_terms == 11:
-            ax.semilogy(steps, bc_obs_u, color="#f4a460", lw=1.5, label="BC (observed $u$)")
-            ax.semilogy(steps, bc_obs_v, color="#ff69b4", lw=1.5, label="BC (observed $v$)")
-            ax.semilogy(steps, bc_obs_p, color="#ff00ff", lw=1.5, label="BC (observed $p$)")
-    
-        ax.set_xlabel("Training iteration")
-        ax.set_ylabel("Loss (log scale)")
-        ax.set_title(f"Loss history - {label}")
-        ax.legend(framealpha=0.9, prop={'size': 10})
-        ax.grid(True, which="both", lw=0.35, alpha=0.4)
-        ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
-    
-        plt.tight_layout()
-        fname = output_dir / f"loss_curves_terms_{label}.png"
-        plt.savefig(fname, dpi=FIG_DPI)
-        plt.close()
-        
-        # Also save summarized PDE and BC curves
-        pde_total = pde_cont + pde_x_m + pde_y_m
-        bc_total = bc_i_u + bc_i_v + bc_w_u + bc_w_v + bc_o_p
-        if n_terms == 11:
-            bc_total += bc_obs_u + bc_obs_v + bc_obs_p
+    for i, (label, data) in enumerate(loss_terms.items()):
+        ax.semilogy(steps, data, color=LOSS_COLORS[i], lw=1.5, label=label)
+        if "pde" in label.lower():
+            pde_terms.append(data)
+        elif "bc" in label.lower():
+            bc_terms.append(data)
 
-        fig, ax = plt.subplots(figsize=(7, 4), dpi=FIG_DPI)
-        
-        ax.semilogy(steps, pde_total, color=COLOR_PINN, lw=1.5, label="PDE Loss")
-        ax.semilogy(steps, bc_total,  color=COLOR_TRUE, lw=1.5, label="BC Loss")
+    ax.set_xlabel("Training iteration")
+    ax.set_ylabel("Loss (log scale)")
+    ax.set_title(f"Training Loss History")
+    ax.legend(framealpha=0.9, prop={'size': 10})
+    ax.grid(True, which="both", lw=0.35, alpha=0.4)
+    ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
+
+    plt.tight_layout()
+    fname = output_dir / f"loss_curves_terms.png"
+    plt.savefig(fname, dpi=FIG_DPI)
+    plt.close()
     
-        ax.set_xlabel("Training iteration")
-        ax.set_ylabel("Loss (log scale)")
-        ax.set_title(f"Loss history - {label}")
-        ax.legend(framealpha=0.9)
-        ax.grid(True, which="both", lw=0.35, alpha=0.4)
-        ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
+    # Also save summarized PDE and BC curves
+    fig, ax = plt.subplots(figsize=(7, 4), dpi=FIG_DPI)
     
-        plt.tight_layout()
-        fname = output_dir / f"loss_curves_summed_{label}.png"
-        plt.savefig(fname, dpi=FIG_DPI)
-        plt.close()
+    pde_total = np.sum(pde_terms, axis=0)
+    bc_total  = np.sum(bc_terms,  axis=0)
+    ax.semilogy(steps, pde_total, color=COLOR_PINN, lw=1.5, label="PDE Loss")
+    ax.semilogy(steps, bc_total,  color=COLOR_TRUE, lw=1.5, label="BC Loss")
+
+    ax.set_xlabel("Training iteration")
+    ax.set_ylabel("Loss (log scale)")
+    ax.set_title(f"Training Loss History")
+    ax.legend(framealpha=0.9)
+    ax.grid(True, which="both", lw=0.35, alpha=0.4)
+    ax.yaxis.set_minor_locator(ticker.LogLocator(subs="all", numticks=10))
+
+    plt.tight_layout()
+    fname = output_dir / f"loss_curves_summed.png"
+    plt.savefig(fname, dpi=FIG_DPI)
+    plt.close()
         
 
 
@@ -236,16 +220,22 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
                       color='black')
     ax.add_patch(ellipse)
     
-    # add points used for supervised learning               TODO: color by this/other geo based on (a,b)
+    # add points used for supervised learning
     if labeled_pts is not None:
-        plt.scatter(labeled_pts[:, 0], labeled_pts[:, 1], s=25, c=COLOR_TRUE)
-        plt.title(f"Domain with n={labeled_pts.shape[0]} measurements (green)")
+        ab_mask = (labeled_pts[:, 2] == a) & (labeled_pts[:, 3] == b)
+        pts_this_ab  = labeled_pts[ab_mask]
+        pts_other_ab = labeled_pts[~ab_mask]
+        plt.scatter(pts_this_ab[:, 0], pts_this_ab[:, 1], s=25, c=COLOR_TRUE, label='This geometry')
+        plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], s=25, c=COLOR_PINN, label='Other geometries')
+        plt.legend()
+        plt.title(f"Domain with n={labeled_pts.shape[0]} measurements")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    tag = cfg.geo_tag(a, b)
 
     # save plot
-    plt.savefig(output_dir / "domain.png", dpi=FIG_DPI)
+    plt.savefig(output_dir / f"domain_{tag}.png", dpi=FIG_DPI)
     plt.close()
 
 
@@ -273,10 +263,12 @@ def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
 
 # --- Helper: Plot One Heatmap ---
 def _plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
-                        cbar_math_format=False, cbar_label=None, title=None):
+                         vmin=None, vmax=None, cbar_math_format=False, 
+                         cbar_label=None, title=None):
     
     X_grid, Y_grid, Z_grid = _prepare_grid_data(X, Y, values, cfg, a, b)
-    pcm = axis.pcolormesh(X_grid, Y_grid, Z_grid, cmap=cmap, 
+    pcm = axis.pcolormesh(X_grid, Y_grid, Z_grid, cmap=cmap,
+                          vmin=vmin, vmax=vmax,
                           shading="auto")
     cbar = plt.colorbar(pcm, ax=axis, label=cbar_label)
     
@@ -339,14 +331,26 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
     models = {"PINN": pinn_data, "FEM": fem_data}
     variables = ["u", "v", "p"]
     
-    fig, axes = plt.subplots(2, 3, figsize=(16, 6), dpi=FIG_DPI, constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 6), dpi=FIG_DPI, constrained_layout=True)
 
     # plot each (model, variable) pair on its own axis
-    for i, (model, data) in enumerate(models.items()):
-        for j, var in enumerate(variables):
+    for j, var in enumerate(variables):
+        
+        model_mins = []
+        model_maxes = []
+        for i, (model, data) in enumerate(models.items()):
+            values = data[:, j+2]
+            model_mins.append(np.min(values))
+            model_maxes.append(np.max(values))
+        
+        vmin = np.min(model_mins)
+        vmax = np.max(model_maxes)
+        
+        for i, (model, data) in enumerate(models.items()):
             
             values = data[:, j+2]
             axes[i, j] = _plot_heatmap_single(axes[i, j], X, Y, values, CMAP_VAR, cfg, a, b,
+                                              vmin=vmin, vmax=vmax,
                                               cbar_label=f"${var}$",
                                               title=f"{model} ${var}(x, y)$")
             
@@ -354,6 +358,7 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
             if separate_plots:
                 fig_sep, ax_sep = plt.subplots(figsize=(6, 3), dpi=FIG_DPI, constrained_layout=True)
                 _plot_heatmap_single(ax_sep, X, Y, values, CMAP_VAR, cfg, a, b,
+                                     vmin=vmin, vmax=vmax,
                                      cbar_label=f"${var}$",
                                      title=f"{model} ${var}(x, y)$")
                 fname = output_dir / f"output_{model}_{var}_{tag}.png"
@@ -447,16 +452,124 @@ def plot_error_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
     plt.close(fig)
 
 
+# --- Velocity Vector Field ---
+# Generated by Claude Sonnet 4.6
+def plot_velocity_quiver(pinn_data, fem_data, cfg, tag, output_dir,
+                         a=None, b=None, nx_q=40, ny_q=20):
+    """
+    Quiver plot of the velocity vector field (u, v) for both PINN and FEM.
+    Arrows are colored by magnitude ||v|| = sqrt(u² + v²).
+
+    Args:
+        pinn_data:  array of shape (N, 5) = [x, y, u_pinn, v_pinn, p_pinn]
+        fem_data:   array of shape (N, 5) = [x, y, u_fem,  v_fem,  p_fem]
+        cfg:        StenosisConfig object
+        tag:        string label for filename
+        output_dir: Path to save plots
+        a, b:       ellipse semi-axes; if provided, draws ellipse outline
+        nx_q, ny_q: quiver grid resolution (coarser than heatmap is intentional —
+                    dense arrows are unreadable)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build a coarse uniform grid for the quiver arrows
+    xs_q = np.linspace(-cfg.L / 2, cfg.L / 2, nx_q)
+    ys_q = np.linspace(0, cfg.H_max, ny_q)
+    XX_q, YY_q = np.meshgrid(xs_q, ys_q)
+    flat_q = np.column_stack([XX_q.ravel(), YY_q.ravel()])
+
+    # Mask points inside the ellipse obstruction
+    if a is not None and b is not None:
+        outside_q = ellipse_mask(flat_q[:, 0], flat_q[:, 1], cfg, a, b)
+        flat_q = flat_q[outside_q]
+        X_q = flat_q[:, 0]
+        Y_q = flat_q[:, 1]
+    else:
+        X_q = XX_q.ravel()
+        Y_q = YY_q.ravel()
+
+    # Interpolate model outputs onto the coarse quiver grid.
+    # Source data lives on the dense heatmap grid — use nearest-point lookup
+    # via a KD-tree to avoid re-running the model.
+    from scipy.spatial import cKDTree
+
+    src_xy = pinn_data[:, 0:2]
+    tree = cKDTree(src_xy)
+    _, idx = tree.query(np.column_stack([X_q, Y_q]))
+
+    def _extract(data, indices):
+        U = data[indices, 2]   # u-velocity col
+        V = data[indices, 3]   # v-velocity col
+        M = np.sqrt(U**2 + V**2)
+        return U, V, M
+
+    models = {
+        "PINN": pinn_data,
+        "FEM":  fem_data,
+    }
+
+    # Shared colormap range across both panels (use FEM as reference)
+    _, _, M_fem_full = _extract(fem_data, idx)
+    vmax = np.percentile(M_fem_full, 98)   # clip extreme values near walls
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 4), dpi=FIG_DPI, constrained_layout=True)
+
+    for ax, (label, data) in zip(axes, models.items()):
+        U_q, V_q, M_q = _extract(data, idx)
+
+        # Normalize arrow length so direction is legible at all speeds.
+        # Scale factor ~0.8 avoids overlap at the chosen grid density.
+        norm_mag = np.where(M_q > 0, M_q, 1e-12)
+        U_n = U_q / norm_mag
+        V_n = V_q / norm_mag
+
+        qv = ax.quiver(
+            X_q, Y_q,
+            U_n, V_n,
+            M_q,                        # color by magnitude
+            cmap=CMAP_VAR,
+            clim=(0, vmax),
+            scale=nx_q * 1.5,           # tune: larger = shorter arrows
+            scale_units="width",
+            width=0.003,
+            headwidth=4,
+            headlength=5,
+        )
+        plt.colorbar(qv, ax=ax, label=r"$\|\mathbf{v}\|$")
+
+        # Ellipse outline
+        if a is not None and b is not None:
+            ellipse_patch = Ellipse(
+                xy=(cfg.x_c, cfg.y_c),
+                width=a * 2, height=b * 2,
+                edgecolor="black", facecolor="black",
+                linestyle="-", linewidth=1.0, zorder=5,
+            )
+            ax.add_patch(ellipse_patch)
+
+        ax.set_xlim(-cfg.L / 2, cfg.L / 2)
+        ax.set_ylim(0, cfg.H_max)
+        ax.set_aspect("equal")
+        ax.set_xlabel("$x$")
+        ax.set_ylabel("$y$")
+        ax.set_title(f"{label} velocity field $\\mathbf{{v}}(x,y)$")
+
+    fname = output_dir / f"quiver_{tag}.png"
+    fig.savefig(fname, dpi=FIG_DPI)
+    plt.close(fig)
+
 
 
 
 # ———————————— GLOBAL ANALYSIS ————————————
 
 # --- Helper: Parse Error JSON ---
-def _extract_train_error_summary(summary_path,
-                                 variables: list = ["u", "v", "p"],
-                                 metrics: list = ["L2", "L_inf", "MSE"],
-                                 aggregate_metrics: list = ["mean_L2", "max_L_inf"]):
+def _extract_error_summary(summary_path,
+                           variables: list = ["u", "v", "p"],
+                           metrics: list = ["L2", "L_inf", "MSE"],
+                           aggregate_metrics: list = ["mean_L2", "max_L_inf"],
+                           strategies: list | None = None):
     """
     Extract the entire summary_train.json into a tidy DataFrame.
     Each row represents one variable/metric or aggregate-metric value for a single run.
@@ -465,41 +578,58 @@ def _extract_train_error_summary(summary_path,
     summary_path = Path(summary_path)
     with summary_path.open() as f:
         errors = json.load(f)
-
-    rows = []
-    for data in errors.values():
-        a = float(data["parameters"]["a"])
-        b = float(data["parameters"]["b"])
-
+    
+    def extract_geometry(geometry_data: dict, strategy=None):
+        rows = []
+        a = float(geometry_data["parameters"]["a"])
+        b = float(geometry_data["parameters"]["b"])
         for var in variables:
             for met in metrics:
                 rows.append({
                     "ab": f'({a}, {b})',
                     "a": a,
                     "b": b,
+                    "strategy": strategy,
                     "variable": var,
                     "metric": met,
-                    "value": float(data[var][met]),
+                    "value": float(geometry_data[var][met]),
                 })
         for aggmetric in aggregate_metrics:
             rows.append({
                 "ab": f'({a}, {b})',
                 "a": a,
                 "b": b,
+                "strategy": strategy,
                 "variable": "aggregate",
                 "metric": aggmetric,
-                "value": float(data["aggregate"][aggmetric]),
+                "value": float(geometry_data["aggregate"][aggmetric]),
             })
+        return rows
+
+    rows = []
+    for entry in errors.values():
+        if strategies:  
+            # need to descend one level deeper through strategy keys
+            for strat, data in entry.items():
+                rows.extend(extract_geometry(data, strat))
+        else:
+            rows.extend(extract_geometry(entry))
 
     if len(rows) == 0:
         raise ValueError("No error data was found in the summary file.")
 
-    return pd.DataFrame(rows).sort_values(by=["a", "b", "variable", "metric"], ignore_index=True)
+    df = pd.DataFrame(rows)
+    
+    if strategies:
+        return df.sort_values(by=["a", "b", "strategy", "variable", "metric"], ignore_index=True)
+    else:
+        return df.sort_values(by=["a", "b", "variable", "metric"], ignore_index=True)
 
 
 # --- Error Comparison Point Plots ---
-def plot_error_comparison(summary_path, output_dir, parameter, 
-                          fixed_ab: list = None, fixed_strat: str = None):
+def plot_error_comparison(summary_path, output_dir, cfg, parameter,
+                          fixed_ab: list = None, fixed_strat: str = None,
+                          strategies: list = None):
     """
     Compare error across all runs, with a specified parameter as the axis. The free parameter can be fixed or averaged.
     Args:
@@ -508,6 +638,7 @@ def plot_error_comparison(summary_path, output_dir, parameter,
         parameter: string specifying the parameter of interest, choices = ["ab", "a", "b", "strategy"]
         fixed_ab:  specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
         fixed_strat: specified name of a prediction strategy to use across (a,b); discards other strategies. If None, takes average errors across all strategies. Requires variable!="".
+        strategies: include if comparing test set errors keyed by strategies
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -520,7 +651,7 @@ def plot_error_comparison(summary_path, output_dir, parameter,
         raise ValueError(f"fixed_ab must be a list of length 2; received {fixed_ab}.")
     if parameter == "strategy":
         if fixed_strat is not None:
-            raise ValueError(f"fixed_n is not compatible with parameter={parameter}.")
+            raise ValueError(f"fixed_strat is not compatible with parameter={parameter}.")
     if parameter != "strategy":
         if fixed_ab is not None:
             raise ValueError(f"fixed_ab is not compatible with parameter={parameter}.")
@@ -537,7 +668,8 @@ def plot_error_comparison(summary_path, output_dir, parameter,
         "strategy": "PINN prediction strategy",
     }
 
-    error_df = _extract_train_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
+    error_df = _extract_error_summary(summary_path, VARS, METRICS, 
+                                      AGGREGATE_METRICS, strategies=strategies)
 
     # filter to specified value of free parameter, if applicable
     if fixed_ab is not None:
@@ -582,6 +714,7 @@ def plot_error_comparison(summary_path, output_dir, parameter,
             linestyles=["-", "--", ":"],
             dodge=True,
         )
+        ax.tick_params("x", rotation=45, rotation_mode="xtick")
         plt.xlabel(PARAMETER_LABELS[parameter])
         plt.ylabel(metric)
         
@@ -618,6 +751,7 @@ def plot_error_comparison(summary_path, output_dir, parameter,
             order=parameter_order,
             color=COLOR_AGGREGATE
         )
+        ax.tick_params("x", rotation=45, rotation_mode="xtick")
         plt.xlabel(PARAMETER_LABELS[parameter])
         plt.ylabel(aggmetric)
         
@@ -644,37 +778,30 @@ def plot_error_comparison(summary_path, output_dir, parameter,
     
 
 # --- Error Comparison Heatmaps ---
-def plot_error_comparison_2d(summary_path, output_dir, index_parameter="n", col_parameter="ab"):
+def plot_error_comparison_2d(summary_path, output_dir, cfg, index_parameter="strategy", col_parameter="ab"):
     """
     Create 2D grid heatmaps of errors for all combinations of two parameters.
     Args:
         summary_path: path to summary.json containing errors across runs
         output_dir: path to folder to save plots
-        parameter_1: string specifying the parameter to plot on the x-axis, choices = ["n", "a", "b", "ab"]
-        parameter_2: string specifying the parameter of plot on the y-axis, choices = ["n", "a", "b", "ab"]
+        parameter_1: string specifying the parameter to plot on the x-axis, choices = ["strategy", "a", "b", "ab"]
+        parameter_2: string specifying the parameter of plot on the y-axis, choices = ["strategy", "a", "b", "ab"]
     """
-    
-    # parameter = parameter x
-    # select with parameter y fixed at each unique value of parameter y
-    # pivot into 2D array
-    # seaborn heatmap — each cell is a run (unique combo of n and (a,b))
-    # plot different metrics:
-    #   L2 error for each variable (3 plots)
-    #   Linf error for each variable (3 plots)
     
     VARS = ["u", "v", "p"]
     METRICS = ["L2", "L_inf"]
     AGGREGATE_METRICS = ["mean_L2", "max_L_inf"]
     
     PARAMETER_LABELS = {
-        "n": "number of labeled training points",
+        "strategy": "prediction strategy",
         "a": "ellipse width (a)",
         "b": "ellipse height (b)",
         "ab": "ellipse geometry (a, b)"
     }
     
     # cols are a, b, n, variable, metric, value
-    error_df = _extract_train_error_summary(summary_path, VARS, METRICS, AGGREGATE_METRICS)
+    error_df = _extract_error_summary(summary_path, VARS, METRICS, 
+                                      AGGREGATE_METRICS, strategies=True)
     
     # Create plot for each metric for each variable
     for var in VARS:

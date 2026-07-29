@@ -55,83 +55,6 @@ def inlet_u(cfg):
     return function
 
 
-# Hard BC output transformation
-def make_hard_bc_transform(cfg):
-    """
-    Hard-imposes only the exact, algebraically tractable BCs:
-        - Inlet u-velocity: Poiseuille parabola at x = -L/2
-        - Inlet v-velocity: v = 0 at x = -L/2
-        - Outlet pressure:  p = 0 at x = L/2
-
-    No-slip wall conditions remain as soft loss terms.
-    """
-
-    L     = float(cfg.L)
-    H     = float(cfg.H_max)
-    u_max = float(cfg.u_in_max)
-    U_ref = float(cfg.U_ref)
-    p_out = float(cfg.P_out)
-    
-    def transform(x, u_raw):
-        xc = x[:, 0:1]
-        yc = x[:, 1:2]
-
-        u_raw_u = u_raw[:, 0:1]
-        u_raw_v = u_raw[:, 1:2]
-        u_raw_p = u_raw[:, 2:3]
-
-        # Distance from inlet, normalized: 0 at x=-L/2, 1 at x=L/2
-        d_inlet = (xc + L / 2.0) / L
-
-        # Distance from outlet, normalized: 0 at x=L/2, 1 at x=-L/2
-        d_outlet = (L / 2.0 - xc) / L
-
-        # Poiseuille inlet profile, nondimensionalized
-        u_inlet = (u_max / U_ref) * 4.0 * (yc / H) * (1.0 - yc / H)
-
-        # u: blends from inlet profile (at x=-L/2) to network output (moving right)
-        #   At inlet (d_inlet=0): u = u_inlet  ✓
-        #   Interior/outlet:      u = u_inlet*(1-d_inlet) + d_inlet*u_raw
-        #                           = network free, with inlet profile decaying away
-        u_hard = (1.0 - d_inlet) * u_inlet + d_inlet * u_raw_u
-
-        # v: zero at inlet, network free elsewhere
-        #   At inlet (d_inlet=0): v = 0  ✓
-        #   Interior/outlet:      v = d_inlet * v_raw (network free)
-        v_hard = d_inlet * u_raw_v
-
-        # p: zero at outlet, network free elsewhere
-        #   At outlet (d_outlet=0): p = p_out  ✓
-        #   Interior/inlet:         p = p_out + d_outlet * p_raw (network free)
-        p_hard = p_out + d_outlet * u_raw_p
-
-        return torch.cat([u_hard, v_hard, p_hard], dim=1)
-    
-    return transform
-
-
-# TEMP TESTING
-def verify_hard_bc_transform(transform, cfg):
-    dtype = torch.float32
-
-    # Inlet points: x = -L/2, y uniform in [0, H]
-    y_test = torch.linspace(0, cfg.H_max, 20, dtype=dtype).unsqueeze(1)
-    x_test = torch.full_like(y_test, -cfg.L / 2)
-    x_inlet = torch.cat([x_test, y_test], dim=1)
-    u_raw   = torch.ones(20, 3, dtype=dtype)
-    out     = transform(x_inlet, u_raw)
-    u_expected = (cfg.u_in_max / cfg.U_ref) * 4.0 * (y_test / cfg.H_max) * (1.0 - y_test / cfg.H_max)
-    print(f"Inlet u max error: {(out[:, 0:1] - u_expected).abs().max():.2e}")  # should be ~0
-    print(f"Inlet v max error: {out[:, 1:2].abs().max():.2e}")                 # should be ~0
-
-    # Outlet points: x = L/2, y uniform
-    x_out = torch.full_like(y_test, cfg.L / 2)
-    x_outlet = torch.cat([x_out, y_test], dim=1)
-    out = transform(x_outlet, u_raw)
-    print(f"Outlet p max error: {(out[:, 2:3] - cfg.P_out).abs().max():.2e}") # should be ~0
-    
-
-
 # --- Define the PDE Residual ---
 def pde_loss(cfg):
     
@@ -173,8 +96,7 @@ def pde_loss(cfg):
 
 
 # --- Helper: Construct PointSetBCs ---
-def build_pointsetbcs(boundary_data, cfg,
-                      requested_bcs=['inlet_u', 'inlet_v', 'wall_u', 'wall_v', 'outlet_p']):
+def build_pointsetbcs(boundary_data, cfg, hard_bc=False):
     """
     boundary_data: array of shape (n_boundary * n_train_geometries, 4) = [x, y, a, b]
     """
@@ -183,14 +105,16 @@ def build_pointsetbcs(boundary_data, cfg,
     x = boundary_data[:, 0]
     y = boundary_data[:, 1]
 
-    inlet_mask  = np.isclose(x, -cfg.L / 2.0, atol=tol)
-    outlet_mask = np.isclose(x,  cfg.L / 2.0, atol=tol)
-    wall_mask   = np.isclose(y, 0.0, atol=tol) | np.isclose(y, cfg.H_max, atol=tol)
+    inlet_mask    = np.isclose(x, -cfg.L / 2.0, atol=tol)
+    outlet_mask   = np.isclose(x,  cfg.L / 2.0, atol=tol)
+    wall_mask     = np.isclose(y, 0.0, atol=tol) | np.isclose(y, cfg.H_max, atol=tol)
+    obstacle_mask = ~inlet_mask & ~outlet_mask & ~wall_mask
 
-    inlet_pts  = boundary_data[inlet_mask]
-    outlet_pts = boundary_data[outlet_mask]
-    wall_pts   = boundary_data[wall_mask]
-
+    inlet_pts    = boundary_data[inlet_mask]
+    outlet_pts   = boundary_data[outlet_mask]
+    wall_pts     = boundary_data[wall_mask]
+    obstacle_pts = boundary_data[obstacle_mask]
+    
     if inlet_pts.size == 0:
         raise ValueError("No inlet boundary points found in boundary_data.")
     if outlet_pts.size == 0:
@@ -202,17 +126,26 @@ def build_pointsetbcs(boundary_data, cfg,
     inlet_vals_u = inlet_u(cfg)(inlet_pts[:, :2])
     inlet_vals_v = np.zeros((inlet_pts.shape[0], 1))
     wall_vals = np.zeros((wall_pts.shape[0], 1))
+    obstacle_vals = np.zeros((obstacle_pts.shape[0], 1))
     outlet_vals_p = np.full((outlet_pts.shape[0], 1), cfg.P_out / cfg.U_ref ** 2)
 
-    # Construct using PointSets, only for requested
-    label_map = {}
-    label_map['inlet_u']  = dde.PointSetBC(inlet_pts,  inlet_vals_u,  component=0)    # parabolic profile
-    label_map['inlet_v']  = dde.PointSetBC(inlet_pts,  inlet_vals_v,  component=1)    # v=0
-    label_map['wall_u']   = dde.PointSetBC(wall_pts,   wall_vals,     component=0)    # u=0
-    label_map['wall_v']   = dde.PointSetBC(wall_pts,   wall_vals,     component=1)    # v=0
-    label_map['outlet_p'] = dde.PointSetBC(outlet_pts, outlet_vals_p, component=2)    # p=0 (from config)
+    # Construct using PointSets
+    bc_inlet_u  = dde.PointSetBC(inlet_pts,  inlet_vals_u,  component=0)    # parabolic profile
+    bc_inlet_v  = dde.PointSetBC(inlet_pts,  inlet_vals_v,  component=1)    # v=0
+    bc_wall_u   = dde.PointSetBC(wall_pts,   wall_vals,     component=0)    # u=0
+    bc_wall_v   = dde.PointSetBC(wall_pts,   wall_vals,     component=1)    # v=0
+    bc_obstacle_u = dde.PointSetBC(obstacle_pts, obstacle_vals, component=0)
+    bc_obstacle_v = dde.PointSetBC(obstacle_pts, obstacle_vals, component=1)
+    bc_outlet_p = dde.PointSetBC(outlet_pts, outlet_vals_p, component=2)    # p=0 (from config)
 
-    return [bc for name, bc in label_map.items() if name in requested_bcs]
+    # if we will be enforcing hard BCs, don't return inlet/outlet
+    if hard_bc:
+        bcs = [bc_wall_u, bc_wall_v, bc_obstacle_u, bc_obstacle_v]
+    else:
+        bcs = [bc_inlet_u, bc_inlet_v, bc_wall_u, bc_wall_v, 
+               bc_obstacle_u, bc_obstacle_v, bc_outlet_p]
+    
+    return bcs
 
 
 # --- Loss Re-Weighter custom callback ---
@@ -265,7 +198,7 @@ def build_model(interior_data, boundary_data, labeled_data, cfg):
         DeepXDE model object built with a PDE dataset and boundary conditions.
     """
     
-    bcs = build_pointsetbcs(boundary_data, cfg)
+    bcs = build_pointsetbcs(boundary_data, cfg, hard_bc=False)
 
     # Add labeled data to BCs
     if labeled_data is not None and labeled_data.shape[0] > 0:
@@ -281,12 +214,10 @@ def build_model(interior_data, boundary_data, labeled_data, cfg):
         bcs.extend([bc_obs_u, bc_obs_v, bc_obs_p])
 
     # Build base geometry. Pretend 4D to match input dimensionality (x,y,a,b)
-    a_min = np.min(interior_data[:, 2])
     a_max = np.max(interior_data[:, 2])
-    b_min = np.min(interior_data[:, 3])
     b_max = np.max(interior_data[:, 3])
     geometry = dde.geometry.Hypercube(
-        xmin=[-cfg.L/2, 0.0, a_min, b_min],
+        xmin=[-cfg.L/2, 0.0, 0.0, 0.0],
         xmax=[ cfg.L/2, cfg.H_max, a_max, b_max]
     )
 
@@ -297,7 +228,7 @@ def build_model(interior_data, boundary_data, labeled_data, cfg):
         bcs=bcs,
         num_domain=0,
         num_boundary=0,
-        num_test=cfg.n_test,
+        num_test=None,
         anchors=interior_data
     )
     
@@ -313,13 +244,13 @@ def build_model(interior_data, boundary_data, labeled_data, cfg):
 # --- Core Training Function ---
 def train_model(model, model_prefix, cfg):
     """
-    Constructs model object and trains until convergence, saving model and metadata.
+    Trains given model object until convergence, saving model and training metadata.
     Args:
         model: DeepXDE model object instantiated with data and network
         model_prefix: filename prefix for saved model, preferrably an absolute path
         cfg: custom config class object
     Returns:
-        loss_history: DeepXDE loss history object of all training
+        model: trained DeepXDE model object
     """
     
     # exclude last 3 loss weights if we don't have labeled points
@@ -394,19 +325,23 @@ def train_model(model, model_prefix, cfg):
 
 
 # --- Restore a Model ---
-def restore_model(model, model_prefix, cfg):
+def restore_model(model, model_prefix, cfg, learning_rate=None, loss_weights=None):
     """
     Restores a saved model based on model_prefix and returns it.
     Args:
         model: DeepXDE model object instantiated with data and network
         model_prefix: filename prefix for saved model, preferrably an absolute path
         cfg: custom config class object
+        learning_rate: optionally override cfg.lr
+        loss_weights: optionally override cfg.loss_weights_adam
     Returns:
         model: DeepXDE model object, restored
     """
     
     # Must compile before restore
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_adam)
+    lr = cfg.lr if learning_rate is None else learning_rate
+    lw = cfg.loss_weights_adam if loss_weights is None else loss_weights
+    model.compile("adam", lr=lr, loss_weights=lw)
 
     # Find the latest saved checkpoint
     model_prefix = Path(model_prefix)
@@ -417,7 +352,7 @@ def restore_model(model, model_prefix, cfg):
     # DeepXDE model.restore() loads optimizer state, causing errors
     checkpoint = torch.load(latest, map_location="cpu")
     model.net.load_state_dict(checkpoint["model_state_dict"])
-    print(f"Restored weights from {latest}")
+    print(f"Restored weights from {latest.name}")
 
     return model
 
@@ -429,14 +364,16 @@ def pinn_predict(model, query):
     Args:
         model: DeepXDE model object used for prediction
         query: model input array of shape (N, 4) = [x,y,a,b]
-    Returns: ndarray of shape (N, 5) with columns = [x, y, u_pred, v_pred, p_pred]
+    Returns: ndarray of shape (N, 5) with columns = [x,y, u_pred,v_pred,p_pred]
     """
     
     query_f32 = query.astype(np.float32)
     pred = model.predict(query_f32)    # (N, 3) = (u,v,p)
     
-    return np.concatenate([query_f32, pred], axis=1)
+    return np.concatenate([query_f32[:, :2], pred], axis=1)
 
+
+# ————————— PINN FINE-TUNING FUNCTIONS —————————
 
 # --- Fine-Tuning custom weight anchoring callback ---
 # Generated by Claude 4.6 Sonnet
@@ -501,37 +438,92 @@ class AnchorRegularizationCallback(dde.callbacks.Callback):
             param.grad.add_(anchor_grad)
 
 
-# --- Fine-Tuning function ---
-def pinn_finetune(pretrained_model, observation_data, query, cfg, a, b,
-                  layers_to_adapt=[-1, -2], weight_anchor=False, hard_bc=False):
+# Hard BC output transformation
+def make_hard_bc_transform(cfg):
     """
-    Fine-tunes a generally-trained model to patient-specific observations.
-    Options to anchor weights and enforce hard BCs, representing different prediction strategies.
+    Hard-imposes only the exact, algebraically tractable BCs:
+        - Inlet u-velocity: Poiseuille parabola at x = -L/2
+        - Inlet v-velocity: v = 0 at x = -L/2
+        - Outlet pressure:  p = 0 at x = L/2
+
+    No-slip wall/obstacle conditions remain as soft loss terms.
+    """
+
+    L     = float(cfg.L)
+    H     = float(cfg.H_max)
+    u_max = float(cfg.u_in_max)
+    U_ref = float(cfg.U_ref)
+    p_out = float(cfg.P_out)
+    
+    def transform(x, u_raw):
+        xc = x[:, 0:1]
+        yc = x[:, 1:2]
+
+        u_raw_u = u_raw[:, 0:1]
+        u_raw_v = u_raw[:, 1:2]
+        u_raw_p = u_raw[:, 2:3]
+
+        # Distance from inlet, normalized: 0 at x=-L/2, 1 at x=L/2
+        d_inlet = (xc + L / 2.0) / L
+
+        # Distance from outlet, normalized: 0 at x=L/2, 1 at x=-L/2
+        d_outlet = (L / 2.0 - xc) / L
+
+        # Use a sharper decay than linear so the hard BC influence drops off faster
+        # Low blend --> enforce BC; high blend --> network is free
+        # So lessen the strength of hard BC by making blend rise quicker
+        blend_inlet = d_inlet ** 0.25
+        blend_outlet = d_outlet ** 0.25
+
+        # Poiseuille inlet profile, nondimensionalized
+        u_inlet = (u_max / U_ref) * 4.0 * (yc / H) * (1.0 - yc / H)
+
+        # u: blends from inlet profile (at x=-L/2) to network output (moving right)
+        #   At inlet (d_inlet=0): u = u_inlet  ✓
+        #   Interior/outlet:      u = u_inlet*(1-blend_inlet) + blend_inlet*u_raw
+        #                           = network free faster than linear interpolation
+        u_hard = (1.0 - blend_inlet) * u_inlet + blend_inlet * u_raw_u
+
+        # v: zero at inlet, network free elsewhere
+        #   At inlet (d_inlet=0): v = 0  ✓
+        #   Interior/outlet:      v = blend_inlet * v_raw (network free)
+        v_hard = blend_inlet * u_raw_v
+
+        # p: zero at outlet, network free elsewhere
+        #   At outlet (blend_outlet=0): p = p_out  ✓
+        #   Interior/inlet:         p = p_out + blend_outlet * p_raw (network free)
+        p_hard = p_out + blend_outlet * u_raw_p
+
+        return torch.cat([u_hard, v_hard, p_hard], dim=1)
+    
+    return transform
+
+
+# --- Fine-Tuning Build Function ---
+#        valid entry point
+def build_model_finetune(pretrained_model, interior_data, boundary_data, observation_data, 
+                         cfg, layers_to_adapt=[-1, -2], hard_bc=False):
+    """
+    Modifies pretrained model object with relevant BCs and data, and constructs loss weights.
     Args:
         pretrained_model: DeepXDE model from general training across geometries
-        observed_data: possibly-sparse (NaNs or Nones okay) array of shape (m_observations, 7) = [x, y, a, b, u, v, p]
-        query: model input array of shape (N, 4) = [x,y,a,b]
+        interior_data: array of shape (n_interior * n_train_geometries, 4) = [x, y, a, b]
+        boundary_data: array of shape (n_boundary * n_train_geometries, 4) = [x, y, a, b]
+        observation_data: array of shape (n_labeled_test * n_geometries, 7) = [x, y, a, b, u, v, p]
         cfg: custom config object
         layers_to_adapt: indices into model.net.linears (reverse recommended)
-        anchor: whether or not to anchor the weights (regularization term)
-        hardbc: whether or not to enforce hard boundary conditions
+        hard_bc: whether or not to enforce hard boundary conditions
     Returns:
-        finetuned_model: DeepXDE model with weights fine-tuned to the given query
+        built_model: fresh DeepXDE model object with old weights and new Data object (BCs, geometry)
+        loss_weights: list of loss weights of the correct length for the model
     """
+    
     # Snapshot pretrained weights
     theta_0 = {name: p.clone().detach() 
                 for name, p in pretrained_model.net.named_parameters()}
     
-    # Optionally freeze early layers
-    for i, layer in enumerate(pretrained_model.net.linears):
-        if i not in layers_to_adapt:
-            for param in layer.parameters():
-                param.requires_grad = False
-    
     # Prep BCs (all unless hard bcs)
-    boundary_data = np.loadtxt(cfg.data_dir / "boundary_data.csv", delimiter=",")
-    requested_bcs = ['wall_u', 'wall_v'] if hard_bc else ['inlet_u', 'inlet_v', 'wall_u', 'wall_v', 'outlet_p']
-    bcs = build_pointsetbcs(boundary_data, cfg, requested_bcs=requested_bcs)
+    bcs = build_pointsetbcs(boundary_data, cfg, hard_bc=hard_bc)
     
     # Parse observation data, add existing to BCs
     obs_u = observation_data[:, 4]
@@ -545,48 +537,87 @@ def pinn_finetune(pretrained_model, observation_data, query, cfg, a, b,
             obs_xyab = observation_data[~np.isnan(obs), 0:4]
             a_check = np.unique(obs_xyab[:, 2])
             b_check = np.unique(obs_xyab[:, 3])
+            
             if len(a_check) > 1 or len(b_check) > 1:
                 raise ValueError(f"Multiple geometries found in observation_data: unique a = {a_check}, unique b = {b_check}")
             if component not in cfg.test_observation_components:
                 raise ValueError(f"Mismatch between component from data ({component}) and config test components ({cfg.test_observation_components})")
+            
             print(f"Extracting observed {var} from observation data.")
             bcs.append(dde.PointSetBC(obs_xyab, obs, component=component))
     
-    # Rebuild data with new geometry + observation BC
-    # expect only a single (a, b) so create a dummy range for domain
-    new_geometry = dde.geometry.Hypercube(xmin=[-cfg.L/2, 0.0, a*0.9, b*0.9],
-                                          xmax=[ cfg.L/2, cfg.H_max, a*1.1, b*1.1])
-    data = dde.data.PDE(geometry=new_geometry, 
+    
+    # Manually rebuild data with new geometry + observation BC
+    a_max = np.max(observation_data[:, 2])
+    b_max = np.max(observation_data[:, 3])
+    geometry = dde.geometry.Hypercube(xmin=[-cfg.L/2, 0.0, 0.0, 0.0],
+                                      xmax=[ cfg.L/2, cfg.H_max, a_max, b_max])
+    
+    data = dde.data.PDE(geometry=geometry, 
                         pde=pde_loss(cfg), 
-                        bcs=bcs)
+                        bcs=bcs,
+                        anchors=interior_data)
     
-    # Construct loss terms
-    old_loss_weights = pretrained_model.loss_weights    # 3 pde + 4 bc + 3 labeled data
-    loss_weights = old_loss_weights[:3]     # always have PDE
+    # Instantiate fresh model object with old model's weights
+    new_model = dde.Model(data, pretrained_model.net)
+    
+    # Optionally freeze early layers
+    for i, layer in enumerate(new_model.net.linears):
+        if i not in layers_to_adapt:
+            for param in layer.parameters():
+                param.requires_grad = False
+    
+    # Construct loss weights
+    loss_weights = cfg.loss_weights_adam[:10]   # exclude labeled data weights
+    
     if hard_bc:
-        loss_weights += old_loss_weights[5:7]   # only wall_u, wall_v
-    else:
-        loss_weights += old_loss_weights[3:8]   # all 4 bc terms
-    loss_weights += [cfg.test_observation_loss_weight] * len(cfg.test_observation_components)
+        # enforce BC output transform
+        new_model.net.apply_output_transform(make_hard_bc_transform(cfg))
+        # remove indices 3,4,9 = bc_inlet_u, bc_inlet_v, bc_outlet_p
+        loss_weights = loss_weights[0:3] + loss_weights[5:9]
     
-    pretrained_model.data = data
-    pretrained_model.compile("adam", lr=cfg.lr_finetune, 
-                            loss_weights=loss_weights)
+    loss_weights.extend(cfg.test_observation_weights)   # add test obs weights to end
     
-    if hard_bc:
-        
-        verify_hard_bc_transform(make_hard_bc_transform(cfg), cfg)      # TEMP
-        
-        pretrained_model.net.apply_output_transform(make_hard_bc_transform(cfg))
+    return new_model, loss_weights
+
+
+# --- Fine-Tuning Training Function ---
+#          valid entry point
+def finetune_model(model, loss_weights, model_prefix, cfg, weight_anchor=False):
+    """
+    Fine-tunes a generally-trained model to patient-specific observations.
+    Options to anchor weights and enforce hard BCs, representing different prediction strategies.
+    Args:
+        model: DeepXDE model object from build_model_finetune() - pretrained weights, new Data object
+        model_prefix: filename prefix for saved model, preferrably an absolute path
+        cfg: custom config object
+        anchor: whether or not to anchor the weights (regularization term)
+        hardbc: whether or not to enforce hard boundary conditions
+    Returns:
+        finetuned_model: DeepXDE model with weights fine-tuned to the given query
+    """
+    
+    model.compile("adam", lr=cfg.lr_finetune, loss_weights=loss_weights)
+    reweighter = LossMagnitudeReweighter()
     
     if weight_anchor:
-        weights = pretrained_model.net.named_parameters()
+        weights = model.net.named_parameters()
         anchor_callback = AnchorRegularizationCallback(weights,
                                                        lambda_anchor=cfg.lambda_anchor,
                                                        frozen_prefixes=None)
-        pretrained_model.train(iterations=cfg.n_finetune,
-                               callbacks=[anchor_callback])
+        
+        loss_history, train_state = model.train(iterations=cfg.n_adam_finetune,
+                                                callbacks=[reweighter, anchor_callback],
+                                                display_every=100,
+                                                model_save_path=model_prefix)
     else:
-        pretrained_model.train(iterations=cfg.n_finetune)
+        loss_history, train_state = model.train(iterations=cfg.n_adam_finetune,
+                                                callbacks=[reweighter],
+                                                display_every=100,
+                                                model_save_path=model_prefix)
     
-    return pretrained_model     # now fine tuned
+    output_dir = model_prefix.parent
+    dde.saveplot(loss_history, train_state, 
+                 issave=True, isplot=False, output_dir=str(output_dir))
+    
+    return model     # now fine-tuned

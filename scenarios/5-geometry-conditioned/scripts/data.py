@@ -46,17 +46,20 @@ def _sample_domain_points_single(cfg, a, b):
 
 
 # --- Create Manual Domain Dataset - All Train Geometries ---
-def build_domain_dataset(cfg):
+def build_domain_dataset(cfg, geometries: list[tuple] = None):
     """
-    Concatenate domain points across all training geometries.
+    Concatenate domain points across provided geometries 
+    (or all training geometries by default).
     Returns:
         all_interior_data: array of shape (n_interior * n_train_geometries, 4) = [x,y,a,b]. 
         all_boundary_data: array of shape (n_boundary * n_train_geometries, 4) = [x,y,a,b]. 
     """
+    selected_geos = geometries if geometries is not None else cfg.train_geometries
+    
     interior_list = []
     boundary_list = []
     
-    for (a, b) in cfg.train_geometries:
+    for (a, b) in selected_geos:
         interior_data, boundary_data = _sample_domain_points_single(cfg, a, b)
         interior_list.append(interior_data)
         boundary_list.append(boundary_data)
@@ -84,11 +87,16 @@ def _sample_labeled_points_single(fem_data, n, cfg, components = [0, 1, 2]):
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
 
-    # Approximate pointwise gradient magnitudes using finite differences on
-    # the flat (unstructured) masked array. This is a rough proxy.
-    du = np.abs(np.gradient(u)) + np.abs(np.gradient(np.gradient(u)))
-    dv = np.abs(np.gradient(v)) + np.abs(np.gradient(np.gradient(v)))
-    dp = np.abs(np.gradient(p))
+    # Approximate pointwise gradient magnitudes for requested components
+    # using finite differences on the flat (unstructured) masked array. 
+    # This is a rough proxy.
+    du = dv = dp = 0
+    if 0 in components:
+        du = np.abs(np.gradient(u)) + np.abs(np.gradient(np.gradient(u)))
+    if 1 in components:
+        dv = np.abs(np.gradient(v)) + np.abs(np.gradient(np.gradient(v)))
+    if 2 in components:
+        dp = np.abs(np.gradient(p))
 
     # Clip outliers before normalizing to avoid one extreme point dominating
     raw_scores = np.clip(du + dv + dp, 0, np.percentile(du + dv + dp, 95))
