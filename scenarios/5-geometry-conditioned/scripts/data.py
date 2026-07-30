@@ -14,6 +14,16 @@ import torch
 import deepxde as dde
 
 
+# ———————————————— DATA HELPER FUNCTIONS ————————————————
+
+def array_mask_ab(array, a, b, a_idx = 2, b_idx = 3, inverse: bool = False):
+    mask = np.isclose(array[:, a_idx], a) & np.isclose(array[:, b_idx], b)
+    if inverse:
+        return array[~mask]
+    else:
+        return array[mask]
+
+
 # ———————————————— DOMAIN DATASET ————————————————
 
 # --- Sample Domain Points - Single Geometry ---
@@ -75,7 +85,9 @@ def build_domain_dataset(cfg, geometries: list[tuple] = None):
 
 
 # --- Sample Labeled Data Points ---
-def _sample_labeled_points_single(fem_data, n, cfg, components = [0, 1, 2]):
+def _sample_labeled_points_single(fem_data, n, cfg, 
+                                  components = [0, 1, 2],
+                                  coordinates: list[tuple] = None):
     """
     Build a single nested sequence of n labeled points for one geometry.
     Returns subset of fem_data, shape (n, 2 + len(components)), ordered by selection priority. 
@@ -86,36 +98,46 @@ def _sample_labeled_points_single(fem_data, n, cfg, components = [0, 1, 2]):
 
     M = len(fem_data)
     u, v, p = fem_data[:, 2], fem_data[:, 3], fem_data[:, 4]
-
-    # Approximate pointwise gradient magnitudes for requested components
-    # using finite differences on the flat (unstructured) masked array. 
-    # This is a rough proxy.
-    du = dv = dp = 0
-    if 0 in components:
-        du = np.abs(np.gradient(u)) + np.abs(np.gradient(np.gradient(u)))
-    if 1 in components:
-        dv = np.abs(np.gradient(v)) + np.abs(np.gradient(np.gradient(v)))
-    if 2 in components:
-        dp = np.abs(np.gradient(p))
-
-    # Clip outliers before normalizing to avoid one extreme point dominating
-    raw_scores = np.clip(du + dv + dp, 0, np.percentile(du + dv + dp, 95))
-    scores = raw_scores / raw_scores.sum()
-
-    generator = np.random.default_rng(seed=cfg.seed)
-    n_scored  = int(n * (1 - cfg.uniform_frac))
-    n_uniform = n - n_scored
-
-    # Sample scored indices first
-    idx_scored = generator.choice(M, size=n_scored, replace=False, p=scores)
     
-    # Sample uniform indices from remaining (excluding scored)
-    remaining_indices = np.setdiff1d(np.arange(M), idx_scored)
-    idx_uniform = generator.choice(remaining_indices, size=n_uniform, replace=False)
+    if coordinates:
+        
+        all_idx = []
+        for (x, y) in coordinates:
+            # get closest fem_data value to requested coordinate
+            distances = np.abs(fem_data[:, 0] - x) + np.abs(fem_data[:, 1] - y)
+            idx = (distances).argmin(axis=0)
+            all_idx.append(idx)
+            
+    else:
+        # Approximate pointwise gradient magnitudes for requested components
+        # using finite differences on the flat (unstructured) masked array. 
+        # This is a rough proxy.
+        du = dv = dp = 0
+        if 0 in components:
+            du = np.abs(np.gradient(u)) + np.abs(np.gradient(np.gradient(u)))
+        if 1 in components:
+            dv = np.abs(np.gradient(v)) + np.abs(np.gradient(np.gradient(v)))
+        if 2 in components:
+            dp = np.abs(np.gradient(p))
 
-    # Combine: scored first, then uniform (guaranteed exactly n points)
-    all_idx = np.concatenate([idx_scored, idx_uniform])
-    
+        # Clip outliers before normalizing to avoid one extreme point dominating
+        raw_scores = np.clip(du + dv + dp, 0, np.percentile(du + dv + dp, 95))
+        scores = raw_scores / raw_scores.sum()
+
+        generator = np.random.default_rng(seed=cfg.seed)
+        n_scored  = int(n * (1 - cfg.uniform_frac))
+        n_uniform = n - n_scored
+
+        # Sample scored indices first
+        idx_scored = generator.choice(M, size=n_scored, replace=False, p=scores)
+        
+        # Sample uniform indices from remaining (excluding scored)
+        remaining_indices = np.setdiff1d(np.arange(M), idx_scored)
+        idx_uniform = generator.choice(remaining_indices, size=n_uniform, replace=False)
+
+        # Combine: scored first, then uniform (guaranteed exactly n points)
+        all_idx = np.concatenate([idx_scored, idx_uniform])
+        
     # select and copy the labeled points
     labeled_pts = fem_data[all_idx].copy()
 
@@ -126,11 +148,13 @@ def _sample_labeled_points_single(fem_data, n, cfg, components = [0, 1, 2]):
     for c in [0, 1, 2]:
         if c not in components:
             labeled_pts[:, c + 2] = nan_col
-
+    
     return labeled_pts
 
 
-def build_labeled_dataset(fem_data_dict, n, cfg, components = [0, 1, 2]):
+def build_labeled_dataset(fem_data_dict, n, cfg, 
+                          components = [0, 1, 2],
+                          coordinates: list[tuple] = None):
     """
     Concatenate labeled datasets (n points per geometry) across all geometries in the fem data.
     Blind to train/test split; fem_data_dict should only contain the desired set of geometries.
@@ -139,6 +163,7 @@ def build_labeled_dataset(fem_data_dict, n, cfg, components = [0, 1, 2]):
         n: the number of labeled points to sample per geometry
         cfg: custom config object
         components: list of components to sample (u=0, v=1, p=2)
+        coordinates: optionally specify exact coordinates from which to create labeled points.
     Returns:
         all_labeled_pts: array of shape (n_labeled * n_geometries, 7) = [x,y,a,b, u,v,p]
     """
@@ -147,7 +172,7 @@ def build_labeled_dataset(fem_data_dict, n, cfg, components = [0, 1, 2]):
     
     for (a, b), fem_data in fem_data_dict.items():
         
-        labeled_pts = _sample_labeled_points_single(fem_data, n, cfg, components)
+        labeled_pts = _sample_labeled_points_single(fem_data, n, cfg, components, coordinates)
         
         # Insert (a, b) values after (x, y)
         ab_cols = np.full((labeled_pts.shape[0], 2), [a, b])

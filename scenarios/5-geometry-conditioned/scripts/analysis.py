@@ -20,14 +20,15 @@ from matplotlib.patches import Ellipse
 import seaborn as sns
 
 from geometry import ellipse_mask
+from data import array_mask_ab
 
 
 PALETTE_DEEP = sns.color_palette("deep").as_hex()
 CMAP_VAR   = "rainbow"
 CMAP_ERR   = "flare"
-COLOR_PINN = PALETTE_DEEP[0]   # blue  – PINN prediction
+COLOR_PINN = PALETTE_DEEP[0]
 COLOR_U    = PALETTE_DEEP[1]
-COLOR_TRUE = PALETTE_DEEP[2]   # warm accent – analytical ground truth
+COLOR_TRUE = PALETTE_DEEP[2]
 COLOR_V    = PALETTE_DEEP[3]
 COLOR_P    = PALETTE_DEEP[4]
 COLOR_AGGREGATE = PALETTE_DEEP[5]
@@ -222,13 +223,14 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
     
     # add points used for supervised learning
     if labeled_pts is not None:
-        ab_mask = (labeled_pts[:, 2] == a) & (labeled_pts[:, 3] == b)
-        pts_this_ab  = labeled_pts[ab_mask]
-        pts_other_ab = labeled_pts[~ab_mask]
-        plt.scatter(pts_this_ab[:, 0], pts_this_ab[:, 1], s=25, c=COLOR_TRUE, label='This geometry')
-        plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], s=25, c=COLOR_PINN, label='Other geometries')
+        pts_this_ab  = array_mask_ab(labeled_pts, a, b, 2, 3)
+        pts_other_ab = array_mask_ab(labeled_pts, a, b, 2, 3, inverse=True)
+        plt.scatter(pts_this_ab[:, 0], pts_this_ab[:, 1], 
+                    s=25, c=COLOR_PINN, label='This geometry')
+        plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], 
+                    s=25, c='grey', alpha=0.3, label='Other geometries')
         plt.legend()
-        plt.title(f"Domain with n={labeled_pts.shape[0]} measurements")
+        plt.title(f"Domain with n={pts_this_ab.shape[0]} of {labeled_pts.shape[0]} total measurements.")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +306,18 @@ def _plot_heatmap_single(axis, X, Y, values, cmap, cfg, a, b,
     return axis
 
 
+def _validate_heatmap_alignment(fem_data, pinn_data_list):
+    if not isinstance(pinn_data_list, (list, tuple)):
+        pinn_data_list = [pinn_data_list]
+    fem_xy = fem_data[:, 0:2]
+    for idx, pinn_data in enumerate(pinn_data_list):
+        if not np.array_equal(pinn_data[:, 0:2], fem_xy):
+            raise ValueError(
+                f"Heatmap alignment error: PINN dataset at index {idx} has mismatched (x,y) coordinates compared to FEM data."
+            )
+    return pinn_data_list
+
+
 # --- Heatmaps of Model Outputs ---
 def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
                          a=None, b=None, separate_plots=False):
@@ -328,7 +342,7 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
         assert "Error: (x,y) coordinate mismatch between PINN and FEM data."
     
     X, Y = pinn_data[:, 0], pinn_data[:, 1]
-    models = {"PINN": pinn_data, "FEM": fem_data}
+    models = {"FEM": fem_data, "PINN": pinn_data}
     variables = ["u", "v", "p"]
     
     fig, axes = plt.subplots(2, 3, figsize=(18, 6), dpi=FIG_DPI, constrained_layout=True)
@@ -336,6 +350,7 @@ def plot_output_heatmaps(pinn_data, fem_data, cfg, tag, output_dir,
     # plot each (model, variable) pair on its own axis
     for j, var in enumerate(variables):
         
+        # min/max across models (PINN/FEM), for the given variable
         model_mins = []
         model_maxes = []
         for i, (model, data) in enumerate(models.items()):
@@ -558,6 +573,169 @@ def plot_velocity_quiver(pinn_data, fem_data, cfg, tag, output_dir,
     fname = output_dir / f"quiver_{tag}.png"
     fig.savefig(fname, dpi=FIG_DPI)
     plt.close(fig)
+
+
+
+# ——————————— SEMI-GLOBAL ANALYSIS ———————————
+
+def plot_output_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
+                               a=None, b=None, strategy_labels=None,
+                               fem_row_label="FEM", separate_plots=False):
+    """
+    Create a stacked comparison heatmap figure with one FEM row and one row per PINN strategy.
+    Args:
+        pinn_data_list: list of arrays, each shape (N, 5) = [x, y, u, v, p]
+        fem_data: array of shape (N, 5) = [x, y, u, v, p]
+        cfg: custom config class object
+        tag: string to label the file with
+        output_dir: path to the relevant plots folder
+        a: ellipse semimajor (half width)
+        b: ellipse semiminor (half height)
+        strategy_labels: optional list of labels corresponding to each PINN dataset
+        fem_row_label: label for the FEM row
+        separate_plots: if True, saves each row to a separate file as well
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pinn_data_list = _validate_heatmap_alignment(fem_data, pinn_data_list)
+    n_models = len(pinn_data_list)
+    if strategy_labels is None:
+        strategy_labels = [f"PINN {i+1}" for i in range(n_models)]
+    if len(strategy_labels) != n_models:
+        raise ValueError("strategy_labels must match the number of pinn_data arrays.")
+
+    X, Y = fem_data[:, 0], fem_data[:, 1]
+    variables = ["u", "v", "p"]
+    model_names = [fem_row_label] + strategy_labels
+
+    # determine consistent color limits for each variable across all rows
+    value_ranges = {}
+    for j, var in enumerate(variables):
+        values = [fem_data[:, j + 2]] + [pinn[:, j + 2] for pinn in pinn_data_list]
+        value_ranges[var] = (np.min([np.min(v) for v in values]),
+                             np.max([np.max(v) for v in values]))
+
+    n_rows = 1 + n_models
+    fig, axes = plt.subplots(n_rows, len(variables), figsize=(6 * len(variables), 3 * n_rows),
+                             dpi=FIG_DPI, constrained_layout=True)
+    axes = np.atleast_2d(axes)
+
+    for row in range(n_rows):
+        row_label = model_names[row]
+        data = fem_data if row == 0 else pinn_data_list[row - 1]
+        for col, var in enumerate(variables):
+            vmin, vmax = value_ranges[var]
+            title = f"{row_label} ${var}(x, y)$"
+            _plot_heatmap_single(axes[row, col], X, Y, data[:, col + 2], CMAP_VAR, cfg, a, b,
+                                 vmin=vmin, vmax=vmax,
+                                 cbar_label=f"${var}$",
+                                 title=title)
+        axes[row, 0].set_ylabel(row_label, rotation=0, labelpad=55, va="center", fontsize=12)
+
+    fname = output_dir / f"outputs_{tag}_comparison.png"
+    fig.savefig(fname, dpi=FIG_DPI)
+    plt.close(fig)
+
+    if separate_plots:
+        for row in range(n_rows):
+            fig_sep, axes_sep = plt.subplots(1, len(variables), figsize=(6 * len(variables), 3),
+                                             dpi=FIG_DPI, constrained_layout=True)
+            axes_sep = np.atleast_1d(axes_sep)
+            data = fem_data if row == 0 else pinn_data_list[row - 1]
+            row_label = model_names[row]
+            for col, var in enumerate(variables):
+                vmin, vmax = value_ranges[var]
+                title = f"{row_label} ${var}(x, y)$"
+                _plot_heatmap_single(axes_sep[col], X, Y, data[:, col + 2], CMAP_VAR, cfg, a, b,
+                                     vmin=vmin, vmax=vmax,
+                                     cbar_label=f"${var}$",
+                                     title=title)
+            fname = output_dir / f"outputs_{tag}_{row_label.replace(' ', '_')}.png"
+            fig_sep.savefig(fname, dpi=FIG_DPI)
+            plt.close(fig_sep)
+
+
+def plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
+                              a=None, b=None, strategy_labels=None,
+                              separate_plots=False):
+    """
+    Create stacked rows of error heatmaps, one row per PINN strategy.
+    Args:
+        pinn_data_list: list of arrays, each shape (N, 5) = [x, y, u, v, p]
+        fem_data: array of shape (N, 5) = [x, y, u, v, p]
+        cfg: custom config class object
+        tag: string to label the file with
+        output_dir: path to the relevant plots folder
+        a: ellipse semimajor (half width)
+        b: ellipse semiminor (half height)
+        strategy_labels: optional list of labels corresponding to each PINN dataset
+        separate_plots: if True, saves each strategy row separately as well
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pinn_data_list = _validate_heatmap_alignment(fem_data, pinn_data_list)
+    n_models = len(pinn_data_list)
+    if strategy_labels is None:
+        strategy_labels = [f"PINN {i+1}" for i in range(n_models)]
+    if len(strategy_labels) != n_models:
+        raise ValueError("strategy_labels must match the number of pinn_data arrays.")
+
+    X, Y = fem_data[:, 0], fem_data[:, 1]
+    variables = ["u", "v", "p", "mean"]
+    col_titles = ["|error_u|", "|error_v|", "|error_p|", "mean |error|"]
+
+    error_maps = []
+    value_ranges = {var: 0.0 for var in variables}
+    for pinn_data in pinn_data_list:
+        err_u = np.abs(pinn_data[:, 2] - fem_data[:, 2])
+        err_v = np.abs(pinn_data[:, 3] - fem_data[:, 3])
+        err_p = np.abs(pinn_data[:, 4] - fem_data[:, 4])
+        mean_err = (err_u + err_v + err_p) / 3.0
+        error_maps.append({"u": err_u, "v": err_v, "p": err_p, "mean": mean_err})
+
+        value_ranges["u"] = max(value_ranges["u"], np.max(err_u))
+        value_ranges["v"] = max(value_ranges["v"], np.max(err_v))
+        value_ranges["p"] = max(value_ranges["p"], np.max(err_p))
+        value_ranges["mean"] = max(value_ranges["mean"], np.max(mean_err))
+
+    n_rows = n_models
+    fig, axes = plt.subplots(n_rows, len(variables), figsize=(6 * len(variables), 3 * n_rows),
+                             dpi=FIG_DPI, constrained_layout=True)
+    axes = np.atleast_2d(axes)
+
+    for row, label in enumerate(strategy_labels):
+        for col, var in enumerate(variables):
+            values = error_maps[row][var]
+            title = f"{label} {col_titles[col]}"
+            _plot_heatmap_single(axes[row, col], X, Y, values, CMAP_ERR, cfg, a, b,
+                                 vmin=0.0, vmax=value_ranges[var],
+                                 cbar_math_format=True,
+                                 cbar_label="|error|",
+                                 title=title)
+        axes[row, 0].set_ylabel(label, rotation=0, labelpad=55, va="center", fontsize=12)
+
+    fname = output_dir / f"errors_{tag}_comparison.png"
+    fig.savefig(fname, dpi=FIG_DPI)
+    plt.close(fig)
+
+    if separate_plots:
+        for row, label in enumerate(strategy_labels):
+            fig_sep, axes_sep = plt.subplots(1, len(variables), figsize=(6 * len(variables), 3),
+                                             dpi=FIG_DPI, constrained_layout=True)
+            axes_sep = np.atleast_1d(axes_sep)
+            for col, var in enumerate(variables):
+                values = error_maps[row][var]
+                title = f"{label} {col_titles[col]}"
+                _plot_heatmap_single(axes_sep[col], X, Y, values, CMAP_ERR, cfg, a, b,
+                                     vmin=0.0, vmax=value_ranges[var],
+                                     cbar_math_format=True,
+                                     cbar_label="|error|",
+                                     title=title)
+            fname = output_dir / f"errors_{tag}_{label.replace(' ', '_')}.png"
+            fig_sep.savefig(fname, dpi=FIG_DPI)
+            plt.close(fig_sep)
 
 
 

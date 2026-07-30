@@ -24,13 +24,14 @@ import deepxde as dde
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import solve_stenosis, fem_predict
-from data import build_domain_dataset, build_labeled_dataset
+from data import build_domain_dataset, build_labeled_dataset, array_mask_ab
 from pinn import (build_model, train_model, restore_model, pinn_predict,
                   build_model_finetune, finetune_model)
 from analysis import (compute_errors, save_errors,
                       plot_loss_curves, plot_domain,
                       plot_output_heatmaps, plot_error_heatmaps,
                       plot_velocity_quiver,
+                      plot_output_heatmaps_multi, plot_error_heatmaps_multi,
                       plot_error_comparison, plot_error_comparison_2d)
 
 
@@ -158,10 +159,9 @@ def sample_domain_data(cfg: StenosisConfig, geometries: list[tuple] = None,
     
     if geometries is not None:
         
-        tag = '_'.join([f"({a},{b})" for (a, b) in geometries])
+        tag = '_'.join([cfg.geo_tag(a,b) for (a, b) in geometries])
         interior_file = cfg.data_dir / f"interior_data_{tag}.csv"
         boundary_file = cfg.data_dir / f"boundary_data_{tag}.csv"
-        filepaths = [interior_file, boundary_file]
         
         if not interior_file.exists() or not boundary_file.exists():
             print(f"Sampling domain training points, will be saved to two files: {interior_file.name}, and {boundary_file.name}")
@@ -198,11 +198,11 @@ def sample_domain_data(cfg: StenosisConfig, geometries: list[tuple] = None,
             path_data_map[boundary_test_p] = all_boundary_test
             
             if force_resample_train:
-                np.savetxt(interior_train, all_interior_train, delimiter=",")
-                np.savetxt(boundary_train, all_boundary_train, delimiter=",")
+                np.savetxt(interior_train_p, all_interior_train, delimiter=",")
+                np.savetxt(boundary_train_p, all_boundary_train, delimiter=",")
             elif force_resample_test:
-                np.savetxt(boundary_test, all_interior_test, delimiter=",")
-                np.savetxt(boundary_test, all_boundary_test, delimiter=",")
+                np.savetxt(boundary_test_p, all_interior_test, delimiter=",")
+                np.savetxt(boundary_test_p, all_boundary_test, delimiter=",")
             else:
                 for path, data in path_data_map.items():
                     if not path.exists():
@@ -239,8 +239,8 @@ def sample_labeled_data(cfg: StenosisConfig,
     # for training
     if force_resample_train or not train_file.exists():
         print(f"Sampling labeled training points, will be saved to: {train_file}")
-        all_labeled_data = build_labeled_dataset(fem_data_dict_train, cfg.n_labeled_train, 
-                                                 cfg, components=train_components)
+        all_labeled_data = build_labeled_dataset(fem_data_dict_train, cfg.n_labeled_train, cfg, 
+                                                 components=train_components)
         np.savetxt(train_file, all_labeled_data, delimiter=",")
     else:
         print(f"Skipping labeled training points sampling since existing points file found: {train_file.name}")
@@ -248,8 +248,14 @@ def sample_labeled_data(cfg: StenosisConfig,
     # for testing fine-tuning
     if force_resample_test or not test_file.exists():
         print(f"Sampling observations for testing, will be saved to: {test_file}")
-        all_labeled_data = build_labeled_dataset(fem_data_dict_test, cfg.n_labeled_test, 
-                                                 cfg, components=test_components)
+        
+        test_coordinates = None
+        if len(cfg.test_observation_coords) > 0 and cfg.n_labeled_test > 0:
+            test_coordinates = cfg.test_observation_coords
+        
+        all_labeled_data = build_labeled_dataset(fem_data_dict_test, cfg.n_labeled_test, cfg, 
+                                                 components=test_components,
+                                                 coordinates=test_coordinates)
         np.savetxt(test_file, all_labeled_data, delimiter=",")
     else:
         print(f"Skipping observations for testing sampling since existing points file found: {test_file.name}")
@@ -357,7 +363,7 @@ def pinn_predict_train(fem_data_dict_train, model, cfg: StenosisConfig):
 
 
 # --- 7. Fine-tune PINN ---
-def pinn_finetune(model, interior_data, boundary_data, observation_data,
+def pinn_finetune(model, interior_data, boundary_data, observation_data, a, b,
                   strategy_name: str, finetune: bool, weight_anchor: bool, hard_bc: bool,
                   cfg: StenosisConfig, force_finetune: bool):
     """
@@ -376,7 +382,7 @@ def pinn_finetune(model, interior_data, boundary_data, observation_data,
     Returns:
         model: DeepXDE model object ready for prediction
     """
-    model_prefix = cfg.pinn_dir / strategy_name / strategy_name
+    model_prefix = cfg.pinn_dir / strategy_name / cfg.geo_tag(a,b) / strategy_name
     
     # if this strategy does not fine-tune, simply build a model with the desired hard BC transform
     if not finetune:
@@ -462,12 +468,9 @@ def pinn_predict_test(fem_data_dict_test, model,
         all_errors_test[tag]["baseline"] = errors
         
         # only finetune on data for this geometry
-        itr_mask = np.isclose(interior_data[:, 2], a) & np.isclose(interior_data[:, 3], b)
-        bnd_mask = np.isclose(boundary_data[:, 2], a) & np.isclose(boundary_data[:, 3], b)
-        obs_mask = np.isclose(observation_data[:, 2], a) & np.isclose(observation_data[:, 3], b)
-        ab_interior = interior_data[itr_mask]
-        ab_boundary = boundary_data[bnd_mask]
-        ab_observation = observation_data[obs_mask]
+        ab_interior = array_mask_ab(interior_data, a, b, 2, 3)
+        ab_boundary = array_mask_ab(boundary_data, a, b, 2, 3)
+        ab_observation = array_mask_ab(observation_data, a, b, 2, 3)
         
         # fine-tuning strategies
         for strategy, params in cfg.finetune_strategies.items():
@@ -479,6 +482,7 @@ def pinn_predict_test(fem_data_dict_test, model,
                                             ab_interior,
                                             ab_boundary,
                                             ab_observation,
+                                            a, b,
                                             strategy,
                                             params["finetune"],
                                             params["anchor"],
@@ -554,8 +558,11 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
         plot_velocity_quiver(pinn_data, fem_data, cfg, tag,
                              output_dir_baseline, a, b)
         
+        strategy_labels = ["baseline"]
+        pinn_data_list = [pinn_data]
+        
         # fine-tuning strategies
-        for strategy in cfg.finetune_strategies.keys():
+        for strategy, params in cfg.finetune_strategies.items():
             output_dir_strat = cfg.geo_dir(a, b) / strategy
             pinn_data = pinn_data_dict_test[(a, b)][strategy]
             
@@ -565,35 +572,47 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
                                 output_dir_strat, a, b, separate_plots=False)
             plot_velocity_quiver(pinn_data, fem_data, cfg, tag,
                                  output_dir_strat, a, b)
+
+            strategy_labels.append(strategy)
+            pinn_data_list.append(pinn_data)
+            
+            # plot loss curves
+            if params["finetune"]:
+                # determine loss terms based on strategy
+                if params["hardbc"]:
+                    loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
+                                        "BC (wall u)", "BC (wall v)", "BC (obstacle u)", "BC (obstacle v)"]
+                else:
+                    loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)", 
+                                        "BC (inlet u)", "BC (inlet v)", "BC (wall u)", "BC (wall v)", 
+                                        "BC (obstacle u)", "BC (obstacle v)", "BC (outlet p)"]
+                obs_labels = ["BC (observed u)", "BC (observed v)", "BC (observed p)"]
+                loss_term_labels.extend([obs_labels[i] for i in cfg.test_observation_components])
+                
+                loss_file = cfg.pinn_dir / strategy / cfg.geo_tag(a,b) / "loss.dat"
+                loss_data = np.loadtxt(loss_file, delimiter=" ", comments="#")
+                plot_loss_curves(loss_data, loss_file.parent, loss_term_labels)
+
+        # stacked strategy comparisons across all finetuning models for this geometry
+        plot_output_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, 
+                                    cfg.geo_dir(a, b) / "comparison",
+                                    a=a, b=b,
+                                    strategy_labels=strategy_labels,
+                                    fem_row_label="FEM")
+        plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, 
+                                    cfg.geo_dir(a, b) / "comparison",
+                                    a=a, b=b,
+                                    strategy_labels=strategy_labels)
         
-    
+        
     print(f"Per-Geometry analysis and visualization complete.")
+    
     
     # GLOBAL analyses
     
-    # plot loss curves
+    # plot main training loss curves
     loss_data = np.loadtxt(cfg.pinn_dir / "loss.dat", delimiter=" ", comments="#")
     plot_loss_curves(loss_data, cfg.pinn_dir)
-    
-    for strategy, params in cfg.finetune_strategies.items():
-        if not params["finetune"]:
-            continue
-        
-        strat_dir = cfg.pinn_dir / strategy
-        loss_data = np.loadtxt(strat_dir / "loss.dat", delimiter=" ", comments="#")
-        
-        # determine loss terms based on strategy
-        if params["hardbc"]:
-            loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
-                                "BC (wall u)", "BC (wall v)", "BC (obstacle u)", "BC (obstacle v)"]
-        else:
-            loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)", 
-                                "BC (inlet u)", "BC (inlet v)", "BC (wall u)", "BC (wall v)", 
-                                "BC (obstacle u)", "BC (obstacle v)", "BC (outlet p)"]
-        obs_labels = ["BC (observed u)", "BC (observed v)", "BC (observed p)"]
-        loss_term_labels.extend([obs_labels[i] for i in cfg.test_observation_components])
-        
-        plot_loss_curves(loss_data, strat_dir, loss_term_labels)
     
     # compare errors
     output_dir = cfg.summary_dir / "train"

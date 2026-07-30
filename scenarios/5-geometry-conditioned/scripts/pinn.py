@@ -439,22 +439,27 @@ class AnchorRegularizationCallback(dde.callbacks.Callback):
 
 
 # Hard BC output transformation
-def make_hard_bc_transform(cfg):
+# Aided by Claude Sonnet 4.6
+def make_hard_bc_transform(cfg, influence_fraction=None):
     """
-    Hard-imposes only the exact, algebraically tractable BCs:
-        - Inlet u-velocity: Poiseuille parabola at x = -L/2
-        - Inlet v-velocity: v = 0 at x = -L/2
-        - Outlet pressure:  p = 0 at x = L/2
+    Hard-imposes inlet velocity profile and outlet pressure with
+    exponentially-decaying spatial influence, localizing each BC
+    to its own boundary.
 
-    No-slip wall/obstacle conditions remain as soft loss terms.
+    Args:
+        influence_fraction: fraction of channel length over which each
+                            BC decays to ~1% of its boundary value.
+                            Default to value specified in config.
     """
+    if influence_fraction is None:
+        influence_fraction = cfg.hard_bc_influence_fraction
+    L         = float(cfg.L)
+    H         = float(cfg.H_max)
+    u_max     = float(cfg.u_in_max)
+    U_ref     = float(cfg.U_ref)
+    p_out     = float(cfg.P_out)
+    sharpness = -np.log(0.01) / influence_fraction
 
-    L     = float(cfg.L)
-    H     = float(cfg.H_max)
-    u_max = float(cfg.u_in_max)
-    U_ref = float(cfg.U_ref)
-    p_out = float(cfg.P_out)
-    
     def transform(x, u_raw):
         xc = x[:, 0:1]
         yc = x[:, 1:2]
@@ -463,39 +468,27 @@ def make_hard_bc_transform(cfg):
         u_raw_v = u_raw[:, 1:2]
         u_raw_p = u_raw[:, 2:3]
 
-        # Distance from inlet, normalized: 0 at x=-L/2, 1 at x=L/2
-        d_inlet = (xc + L / 2.0) / L
+        # Proximity to inlet/outlet: 1 at the boundary, ~0 far from it
+        x_from_inlet  = (xc + L / 2.0) / L    # 0 at inlet,  1 at outlet
+        x_from_outlet = (L / 2.0 - xc) / L    # 0 at outlet, 1 at inlet
 
-        # Distance from outlet, normalized: 0 at x=L/2, 1 at x=-L/2
-        d_outlet = (L / 2.0 - xc) / L
+        d_inlet  = torch.exp(-sharpness * x_from_inlet)
+        d_outlet = torch.exp(-sharpness * x_from_outlet)
 
-        # Use a sharper decay than linear so the hard BC influence drops off faster
-        # Low blend --> enforce BC; high blend --> network is free
-        # So lessen the strength of hard BC by making blend rise quicker
-        blend_inlet = d_inlet ** 0.25
-        blend_outlet = d_outlet ** 0.25
-
-        # Poiseuille inlet profile, nondimensionalized
+        # Poiseuille inlet profile
         u_inlet = (u_max / U_ref) * 4.0 * (yc / H) * (1.0 - yc / H)
 
-        # u: blends from inlet profile (at x=-L/2) to network output (moving right)
-        #   At inlet (d_inlet=0): u = u_inlet  ✓
-        #   Interior/outlet:      u = u_inlet*(1-blend_inlet) + blend_inlet*u_raw
-        #                           = network free faster than linear interpolation
-        u_hard = (1.0 - blend_inlet) * u_inlet + blend_inlet * u_raw_u
+        # u: inlet profile at x=-L/2, network free downstream
+        u_hard = d_inlet * u_inlet + (1.0 - d_inlet) * u_raw_u
 
-        # v: zero at inlet, network free elsewhere
-        #   At inlet (d_inlet=0): v = 0  ✓
-        #   Interior/outlet:      v = blend_inlet * v_raw (network free)
-        v_hard = blend_inlet * u_raw_v
+        # v: zero at x=-L/2, network free downstream
+        v_hard = (1.0 - d_inlet) * u_raw_v
 
-        # p: zero at outlet, network free elsewhere
-        #   At outlet (blend_outlet=0): p = p_out  ✓
-        #   Interior/inlet:         p = p_out + blend_outlet * p_raw (network free)
-        p_hard = p_out + blend_outlet * u_raw_p
+        # p: p_out at x=L/2, network free upstream
+        p_hard = p_out + (1.0 - d_outlet) * u_raw_p
 
         return torch.cat([u_hard, v_hard, p_hard], dim=1)
-    
+
     return transform
 
 
@@ -598,7 +591,7 @@ def finetune_model(model, loss_weights, model_prefix, cfg, weight_anchor=False):
     """
     
     model.compile("adam", lr=cfg.lr_finetune, loss_weights=loss_weights)
-    reweighter = LossMagnitudeReweighter()
+    reweighter = LossMagnitudeReweighter(period=100)
     
     if weight_anchor:
         weights = model.net.named_parameters()

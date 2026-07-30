@@ -24,7 +24,7 @@ class StenosisConfig:
     y_c: float = 1.0        # ellipse center y
     
     # --- Geometry Variables ---
-    # List of (a, b) = ellipse semimajor, semiminor
+    # List of (a, b) = ellipse semimajor, semiminor; where a>b
     
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
@@ -36,9 +36,9 @@ class StenosisConfig:
     
     test_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
+            (0.30, 0.20),
             (0.45, 0.35),
             (0.55, 0.45),
-            (0.60, 0.65),
             (0.65, 0.60),
             (0.65, 0.65),
         ]
@@ -86,12 +86,12 @@ class StenosisConfig:
             "finetune": {
                 "finetune": True, 
                 "anchor": False, 
-                "hardbc": False
+                "hardbc": False,
             },
             "finetune+anchor": {
                 "finetune": True, 
                 "anchor": True, 
-                "hardbc": False
+                "hardbc": False,
             },
             "finetune+anchor+hardbc": {
                 "finetune": True, 
@@ -110,18 +110,29 @@ class StenosisConfig:
             },
         }
     )
-    n_adam_finetune: int = 1000
-    lr_finetune: float = 5e-6
-    n_labeled_test:  int = 5    # default 3, can tune.
+    n_adam_finetune: int = 3000
+    lr_finetune: float = 1e-5
+    lambda_anchor: float = 1e-5     # regularization strength, default=1e-5
+    hard_bc_influence_fraction: float = 0.20    # % of channel length over which hard BCs decay to 1%
+    
+    n_labeled_test:  int = 3    # default 3, can tune
+    # OPTIONALLY specify approx coords of observations rather than random sampling
+    test_observation_coords: List[Tuple[float, float]] = field(
+        default_factory=lambda: [
+            (-0.5, 0.5),
+            (0.0, 0.25),
+            (0.75, 0.75),
+        ]
+    )
     test_observation_components: List[int] = field(
         # 0=u, 1=v, 2=p; currently just use v to simulate doppler
         default_factory=lambda: [1]
     )
     test_observation_weights: List[float] = field(
         # bc_obs_v - add terms if including more components
-        default_factory=lambda: [20]
+        # need large weight to fight thousands of collocation points, but LossReweighter will handle anyways
+        default_factory=lambda: [1000]
     )
-    lambda_anchor: float = 1e-5     # regularization strength, default=1e-5
     
     
     # --- FEM ---
@@ -222,8 +233,9 @@ class StenosisConfig:
         self.summary_dir.mkdir(parents=True, exist_ok=True)
         
         for strat in self.finetune_strategies.keys():
-            d = self.pinn_dir / strat
-            d.mkdir(parents=True, exist_ok=True)
+            for (a, b) in self.test_geometries:
+                d = self.pinn_dir / strat / self.geo_tag(a, b)
+                d.mkdir(parents=True, exist_ok=True)
         for (a, b) in self.train_geometries:
             self.geo_dir(a, b).mkdir(parents=True, exist_ok=True)
         for (a, b) in self.test_geometries:
