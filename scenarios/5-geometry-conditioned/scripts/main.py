@@ -28,10 +28,10 @@ from data import build_domain_dataset, build_labeled_dataset, array_mask_ab
 from pinn import (build_model, train_model, restore_model, pinn_predict,
                   build_model_finetune, finetune_model)
 from analysis import (compute_errors, save_errors,
-                      plot_loss_curves, plot_domain,
-                      plot_output_heatmaps, plot_error_heatmaps,
-                      plot_velocity_quiver,
-                      plot_output_heatmaps_multi, plot_error_heatmaps_multi,
+                      plot_loss_curves, plot_domain, plot_all_domains,
+                      plot_output_heatmaps, plot_output_heatmaps_multi,
+                      plot_error_heatmaps, plot_error_heatmaps_multi,
+                      plot_velocity_quiver, plot_velocity_quiver_multi,
                       plot_error_comparison, plot_error_comparison_2d)
 
 
@@ -351,8 +351,7 @@ def pinn_predict_train(fem_data_dict_train, model, cfg: StenosisConfig):
         
         pinn_data, errors = _pinn_predict(fem_data, model, a, b, cfg, output_dir)
         pinn_data_dict_train[(a, b)] = pinn_data
-        all_errors_train[tag] = errors
-        all_errors_train[tag]["parameters"] = {"a": a, "b": b}
+        all_errors_train[tag] = {"train": errors}
     
     # Save errors
     summary_path_train = cfg.summary_dir / "error_summary_train.json"
@@ -524,8 +523,10 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
         cfg: custom config object
     """
     
+    
     # TRAIN geometries - per-geometry analyses
     for (a, b) in pinn_data_dict_train.keys():
+        print(f"Visualizing training geometry ({a}, {b})")
         
         output_dir = cfg.geo_dir(a, b)
         tag = cfg.geo_tag(a, b)
@@ -540,6 +541,7 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
     
     # TEST geometries - per-geometry, per-strategy analyses
     for (a, b) in pinn_data_dict_test.keys():
+        print(f"Visualizing testing geometry ({a}, {b})")
         
         output_dir = cfg.geo_dir(a, b)
         tag = cfg.geo_tag(a, b)
@@ -599,6 +601,11 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
                                     a=a, b=b,
                                     strategy_labels=strategy_labels,
                                     fem_row_label="FEM")
+        plot_velocity_quiver_multi(pinn_data_list, fem_data, cfg, tag,
+                                   cfg.geo_dir(a, b) / "comparison",
+                                   a=a, b=b, 
+                                   strategy_labels=strategy_labels,
+                                   fem_row_label="FEM")
         plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, 
                                     cfg.geo_dir(a, b) / "comparison",
                                     a=a, b=b,
@@ -610,21 +617,48 @@ def visualization(pinn_data_dict_train, pinn_data_dict_test,
     
     # GLOBAL analyses
     
+    # visualize all geometries overlayed
+    plot_all_domains(cfg, cfg.results_dir)
+    
     # plot main training loss curves
     loss_data = np.loadtxt(cfg.pinn_dir / "loss.dat", delimiter=" ", comments="#")
     plot_loss_curves(loss_data, cfg.pinn_dir)
     
-    # compare errors
+    # compare train & test errors separately
     output_dir = cfg.summary_dir / "train"
     plot_error_comparison(train_error_summary_path, output_dir, cfg, 
-                          parameter="ab", fixed_strat=None, strategies=None)
+                          parameter="ab", fixed_strat=None, strategies=["train"])
     
     output_dir = cfg.summary_dir / "test"
-    plot_error_comparison(test_error_summary_path, output_dir, cfg, parameter="ab", 
-                          fixed_strat=None, strategies=cfg.finetune_strategies.keys())
-    plot_error_comparison(test_error_summary_path, output_dir, cfg, parameter="strategy", 
-                          fixed_ab=None, strategies=cfg.finetune_strategies.keys())
-    plot_error_comparison_2d(test_error_summary_path, output_dir, cfg)
+    test_strats = ["baseline"] + list(cfg.finetune_strategies.keys())
+    plot_error_comparison(test_error_summary_path, output_dir, cfg, 
+                          parameter="ab", fixed_strat=None, 
+                          strategies=test_strats)
+    plot_error_comparison(test_error_summary_path, output_dir, cfg, 
+                          parameter="strategy", fixed_ab=None,
+                          strategies=test_strats)
+    plot_error_comparison_2d(test_error_summary_path, output_dir, cfg, 
+                             strategy_order=test_strats)
+    
+    # compare train + test errors side-by-side
+    with open(train_error_summary_path, "r", encoding="utf-8") as f:
+        train_errors = json.load(f)
+    with open(test_error_summary_path, "r", encoding="utf-8") as f:
+        test_errors = json.load(f)
+    all_errors = train_errors | test_errors
+    
+    all_error_summary_path = train_error_summary_path.parent / "error_summary_all.json"
+    with open(all_error_summary_path, "w", encoding="utf-8") as f:
+        json.dump(all_errors, f, indent=2)
+    
+    output_dir = cfg.summary_dir / "all"
+    all_strategies = ["train"] + test_strats
+    plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="ab",
+                          fixed_strat=None, strategies=all_strategies)
+    plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="strategy",
+                          fixed_ab=None, strategies=all_strategies)
+    plot_error_comparison_2d(all_error_summary_path, output_dir, cfg,
+                             strategy_order=all_strategies)
     
     # log config
     config_dict = cfg.config_as_dict()

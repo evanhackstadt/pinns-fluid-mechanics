@@ -28,19 +28,18 @@ class StenosisConfig:
     
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (0.4, 0.3),
-            (0.5, 0.4),
-            (0.6, 0.6)
+            (0.3, 0.25),
+            (0.55, 0.45),
+            (0.65, 0.60)
         ]
     )
     
     test_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (0.30, 0.20),
-            (0.45, 0.35),
-            (0.55, 0.45),
-            (0.65, 0.60),
-            (0.65, 0.65),
+            (0.25, 0.20),   # extrapolation
+            (0.45, 0.35),   # interpolation
+            (0.60, 0.50),   # interpolation
+            (0.65, 0.65),   # extrapolation
         ]
     )
     
@@ -83,45 +82,47 @@ class StenosisConfig:
     # fine-tuning
     finetune_strategies: Dict = field(
         default_factory=lambda: {
+            # "hardbc": {
+            #     "finetune": False, 
+            #     "anchor": False, 
+            #     "hardbc": True
+            # },
             "finetune": {
                 "finetune": True, 
                 "anchor": False, 
                 "hardbc": False,
             },
-            "finetune+anchor": {
-                "finetune": True, 
-                "anchor": True, 
-                "hardbc": False,
-            },
-            "finetune+anchor+hardbc": {
-                "finetune": True, 
-                "anchor": True, 
-                "hardbc": True
-            },
-            "finetune+hardbc": {
-                "finetune": True, 
-                "anchor": False, 
-                "hardbc": True
-            },
-            "hardbc": {
-                "finetune": False, 
-                "anchor": False, 
-                "hardbc": True
-            },
+            # "finetune+anchor": {
+            #     "finetune": True, 
+            #     "anchor": True, 
+            #     "hardbc": False,
+            # },
+            # "finetune+hardbc": {
+            #     "finetune": True, 
+            #     "anchor": False, 
+            #     "hardbc": True
+            # },
+            # "finetune+anchor+hardbc": {
+            #     "finetune": True, 
+            #     "anchor": True, 
+            #     "hardbc": True
+            # },
         }
     )
     n_adam_finetune: int = 3000
     lr_finetune: float = 1e-5
-    lambda_anchor: float = 1e-5     # regularization strength, default=1e-5
+    lambda_anchor: float = 0.1     # weight regularization strength
     hard_bc_influence_fraction: float = 0.20    # % of channel length over which hard BCs decay to 1%
     
-    n_labeled_test:  int = 3    # default 3, can tune
+    n_labeled_test:  int = 5    # default 5, can tune
     # OPTIONALLY specify approx coords of observations rather than random sampling
     test_observation_coords: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (-0.5, 0.5),
-            (0.0, 0.25),
-            (0.75, 0.75),
+            (-0.6, 0.7),    # upstream
+            (-0.5, 0.3),    # upstream
+            (0.0, 0.25),    # middle
+            (0.6, 0.4),     # downstream
+            (0.7, 0.8),     # downstream
         ]
     )
     test_observation_components: List[int] = field(

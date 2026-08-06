@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse
 import seaborn as sns
 
@@ -43,12 +44,12 @@ FIG_DPI    = 200
 # --- Compute Errors ---
 def compute_errors(pinn_data, fem_data):
     """
-    Computes L2, L_inf (max absolute error), and MSE between prediction and ground-truth data.
+    Computes L2 and L_inf (max absolute error) between prediction and ground-truth data.
     Args:
         pinn_data: array of shape (N, 5) with columns = [x, y, u_pinn, v_pinn, p_pinn]
         fem_data:  array of shape (N, 5) with columns = [x, y, u_fem, v_fem, p_fem]
     Returns:
-        errors: dict containing L2, L_inf, and MSE for u, v, p, and total
+        errors: dict containing L2 and L_inf for u, v, p; and mean L2 and max L_inf
     """
     
     VARS = ['u', 'v', 'p']
@@ -92,7 +93,6 @@ def save_errors(errors, output_dir, a, b):
         output_dir: path to the folder to save the file
         a: ellipse semimajor (half width)
         b: ellipse semiminor (half height)
-        n: number of labeled points used for supervised training
     """
     
     output_dir = Path(output_dir)
@@ -197,7 +197,8 @@ def plot_loss_curves(loss_data, output_dir,
 
 
 # --- Plot Domain ---
-def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
+def plot_domain(cfg, a, b, output_dir, labeled_pts = None, 
+                plot_other_geos_labeled = False):
     """
     Visualizes the spatial domain and sampled labeled points, if provided.
     Args:
@@ -206,6 +207,7 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
         b: ellipse semiminor (half height)
         output_dir: path to the relevant plots folder to save plot
         labeled_pts: array of shape (N, ≥4) with columns = [x,y,a,b,...]
+        plot_other_geos_labeled: whether or not to also plot the labeled points from other geometries
     """
     # create box
     fig, ax = plt.subplots(figsize=(10, 5), dpi=FIG_DPI)
@@ -223,14 +225,20 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
     
     # add points used for supervised learning
     if labeled_pts is not None:
+        components = ["u", "v", "p"]
+        lb_cmp = ', '.join([components[i] for i in cfg.test_observation_components])
+        
         pts_this_ab  = array_mask_ab(labeled_pts, a, b, 2, 3)
-        pts_other_ab = array_mask_ab(labeled_pts, a, b, 2, 3, inverse=True)
         plt.scatter(pts_this_ab[:, 0], pts_this_ab[:, 1], 
                     s=25, c=COLOR_PINN, label='This geometry')
-        plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], 
-                    s=25, c='grey', alpha=0.3, label='Other geometries')
-        plt.legend()
-        plt.title(f"Domain with n={pts_this_ab.shape[0]} of {labeled_pts.shape[0]} total measurements.")
+        if plot_other_geos_labeled:
+            pts_other_ab = array_mask_ab(labeled_pts, a, b, 2, 3, inverse=True)
+            plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], 
+                        s=25, c='grey', alpha=0.3, label='Other geometries')
+            plt.legend()
+            plt.title(f"Domain with n={pts_this_ab.shape[0]} of {labeled_pts.shape[0]} total measurements of component(s) ({lb_cmp}).")
+        else:
+            plt.title(f"Domain with n={pts_this_ab.shape[0]} measurements of component(s) ({lb_cmp}).")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -240,6 +248,69 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None):
     plt.savefig(output_dir / f"domain_{tag}.png", dpi=FIG_DPI)
     plt.close()
 
+
+def plot_all_domains(cfg, output_dir, show_train=True, show_test=True):
+    """
+    Plot the channel domain and draw the ellipse outlines for every train/test geometry.
+    Args:
+        cfg: custom config class object
+        output_dir: path to the plots folder
+        show_train: whether to draw train geometries
+        show_test: whether to draw test geometries
+    """
+    if not (show_train or show_test):
+        raise ValueError("At least one of show_train or show_test must be True.")
+
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=FIG_DPI)
+    ax.set_xlim(-cfg.L/2, cfg.L/2)
+    ax.set_ylim(0, cfg.H_max)
+    ax.set_xlabel("$x$")
+    ax.set_ylabel("$y$")
+    ax.set_title("Train and test ellipse geometries")
+
+    if show_train:
+        for a, b in cfg.train_geometries:
+            ellipse = Ellipse(
+                xy=(cfg.x_c, cfg.y_c),
+                width=a * 2,
+                height=b * 2,
+                edgecolor="C0",
+                facecolor="none",
+                linestyle="-",
+                linewidth=1.5,
+                alpha=0.85,
+                zorder=10,
+            )
+            ax.add_patch(ellipse)
+
+    if show_test:
+        for a, b in cfg.test_geometries:
+            ellipse = Ellipse(
+                xy=(cfg.x_c, cfg.y_c),
+                width=a * 2,
+                height=b * 2,
+                edgecolor="C1",
+                facecolor="none",
+                linestyle="--",
+                linewidth=1.5,
+                alpha=0.85,
+                zorder=10,
+            )
+            ax.add_patch(ellipse)
+
+    handles = []
+    if show_train:
+        handles.append(Line2D([0], [0], color="C0", lw=2, linestyle="-", label="train geometries"))
+    if show_test:
+        handles.append(Line2D([0], [0], color="C1", lw=2, linestyle="--", label="test geometries"))
+    ax.legend(handles=handles, framealpha=0.9)
+    ax.set_aspect("equal")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fname = output_dir / "all_domains.png"
+    fig.savefig(fname, dpi=FIG_DPI)
+    plt.close(fig)
 
 
 # ———————————— HEATMAP FUNCTIONS ————————————
@@ -533,19 +604,22 @@ def plot_velocity_quiver(pinn_data, fem_data, cfg, tag, output_dir,
     for ax, (label, data) in zip(axes, models.items()):
         U_q, V_q, M_q = _extract(data, idx)
 
-        # Normalize arrow length so direction is legible at all speeds.
-        # Scale factor ~0.8 avoids overlap at the chosen grid density.
+        # Scale arrow length slightly with magnitude while preserving direction.
+        # This keeps low-magnitude arrows shorter and high-magnitude arrows longer,
+        # without fully normalizing all arrows to equal length.
         norm_mag = np.where(M_q > 0, M_q, 1e-12)
-        U_n = U_q / norm_mag
-        V_n = V_q / norm_mag
+        M_norm = M_q / np.max(M_q) if np.max(M_q) > 0 else M_q
+        length_mod = 0.4 + 1.1 * np.sqrt(M_norm)
+        U_s = U_q / norm_mag * length_mod
+        V_s = V_q / norm_mag * length_mod
 
         qv = ax.quiver(
             X_q, Y_q,
-            U_n, V_n,
+            U_s, V_s,
             M_q,                        # color by magnitude
             cmap=CMAP_VAR,
             clim=(0, vmax),
-            scale=nx_q * 1.5,           # tune: larger = shorter arrows
+            scale=nx_q * 1.25,          # tune: larger = shorter arrows
             scale_units="width",
             width=0.003,
             headwidth=4,
@@ -578,9 +652,11 @@ def plot_velocity_quiver(pinn_data, fem_data, cfg, tag, output_dir,
 
 # ——————————— SEMI-GLOBAL ANALYSIS ———————————
 
+# Stack FEM + PINN strategy heatmaps
+# Generated by VSCode Copilot
 def plot_output_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
                                a=None, b=None, strategy_labels=None,
-                               fem_row_label="FEM", separate_plots=False):
+                               fem_row_label="FEM"):
     """
     Create a stacked comparison heatmap figure with one FEM row and one row per PINN strategy.
     Args:
@@ -593,7 +669,6 @@ def plot_output_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
         b: ellipse semiminor (half height)
         strategy_labels: optional list of labels corresponding to each PINN dataset
         fem_row_label: label for the FEM row
-        separate_plots: if True, saves each row to a separate file as well
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -637,28 +712,11 @@ def plot_output_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
     fig.savefig(fname, dpi=FIG_DPI)
     plt.close(fig)
 
-    if separate_plots:
-        for row in range(n_rows):
-            fig_sep, axes_sep = plt.subplots(1, len(variables), figsize=(6 * len(variables), 3),
-                                             dpi=FIG_DPI, constrained_layout=True)
-            axes_sep = np.atleast_1d(axes_sep)
-            data = fem_data if row == 0 else pinn_data_list[row - 1]
-            row_label = model_names[row]
-            for col, var in enumerate(variables):
-                vmin, vmax = value_ranges[var]
-                title = f"{row_label} ${var}(x, y)$"
-                _plot_heatmap_single(axes_sep[col], X, Y, data[:, col + 2], CMAP_VAR, cfg, a, b,
-                                     vmin=vmin, vmax=vmax,
-                                     cbar_label=f"${var}$",
-                                     title=title)
-            fname = output_dir / f"outputs_{tag}_{row_label.replace(' ', '_')}.png"
-            fig_sep.savefig(fname, dpi=FIG_DPI)
-            plt.close(fig_sep)
 
-
+# Stack error heatmaps from PINN strategies
+# Generated by VSCode Copilot
 def plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
-                              a=None, b=None, strategy_labels=None,
-                              separate_plots=False):
+                              a=None, b=None, strategy_labels=None):
     """
     Create stacked rows of error heatmaps, one row per PINN strategy.
     Args:
@@ -670,7 +728,6 @@ def plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
         a: ellipse semimajor (half width)
         b: ellipse semiminor (half height)
         strategy_labels: optional list of labels corresponding to each PINN dataset
-        separate_plots: if True, saves each strategy row separately as well
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -720,23 +777,116 @@ def plot_error_heatmaps_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
     fig.savefig(fname, dpi=FIG_DPI)
     plt.close(fig)
 
-    if separate_plots:
-        for row, label in enumerate(strategy_labels):
-            fig_sep, axes_sep = plt.subplots(1, len(variables), figsize=(6 * len(variables), 3),
-                                             dpi=FIG_DPI, constrained_layout=True)
-            axes_sep = np.atleast_1d(axes_sep)
-            for col, var in enumerate(variables):
-                values = error_maps[row][var]
-                title = f"{label} {col_titles[col]}"
-                _plot_heatmap_single(axes_sep[col], X, Y, values, CMAP_ERR, cfg, a, b,
-                                     vmin=0.0, vmax=value_ranges[var],
-                                     cbar_math_format=True,
-                                     cbar_label="|error|",
-                                     title=title)
-            fname = output_dir / f"errors_{tag}_{label.replace(' ', '_')}.png"
-            fig_sep.savefig(fname, dpi=FIG_DPI)
-            plt.close(fig_sep)
 
+# Stack FEM + PINN strategy velocity quivers
+# Generated by VSCode Raptor Mini
+def plot_velocity_quiver_multi(pinn_data_list, fem_data, cfg, tag, output_dir,
+                               a=None, b=None, strategy_labels=None,
+                               fem_row_label="FEM", nx_q=24, ny_q=12):
+    """
+    Create a stacked quiver comparison figure with one FEM row and one row per PINN strategy.
+    Args:
+        pinn_data_list: list of arrays, each shape (N, 5) = [x, y, u, v, p]
+        fem_data: array of shape (N, 5) = [x, y, u, v, p]
+        cfg: custom config class object
+        tag: string to label the file with
+        output_dir: path to the relevant plots folder
+        a: ellipse semimajor (half width)
+        b: ellipse semiminor (half height)
+        strategy_labels: optional list of labels corresponding to each PINN dataset
+        fem_row_label: label for the FEM row
+        nx_q, ny_q: quiver grid resolution (coarser than heatmap is intentional)
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pinn_data_list = _validate_heatmap_alignment(fem_data, pinn_data_list)
+    n_models = len(pinn_data_list)
+    if strategy_labels is None:
+        strategy_labels = [f"PINN {i+1}" for i in range(n_models)]
+    if len(strategy_labels) != n_models:
+        raise ValueError("strategy_labels must match the number of pinn_data arrays.")
+
+    xs_q = np.linspace(-cfg.L / 2, cfg.L / 2, nx_q)
+    ys_q = np.linspace(0, cfg.H_max, ny_q)
+    XX_q, YY_q = np.meshgrid(xs_q, ys_q)
+    flat_q = np.column_stack([XX_q.ravel(), YY_q.ravel()])
+
+    if a is not None and b is not None:
+        outside_q = ellipse_mask(flat_q[:, 0], flat_q[:, 1], cfg, a, b)
+        flat_q = flat_q[outside_q]
+
+    X_q = flat_q[:, 0]
+    Y_q = flat_q[:, 1]
+
+    from scipy.spatial import cKDTree
+
+    src_xy = fem_data[:, 0:2]
+    tree = cKDTree(src_xy)
+    _, idx = tree.query(np.column_stack([X_q, Y_q]))
+
+    def _extract_velocity(data, indices):
+        U = data[indices, 2]
+        V = data[indices, 3]
+        M = np.sqrt(U**2 + V**2)
+        return U, V, M
+
+    _, _, M_fem_full = _extract_velocity(fem_data, idx)
+    vmax = np.percentile(M_fem_full, 98)
+
+    model_names = [fem_row_label] + strategy_labels
+    n_rows = 1 + n_models
+    fig, axes = plt.subplots(n_rows, 1, figsize=(8, 4 * n_rows),
+                             dpi=FIG_DPI, constrained_layout=True)
+    axes = np.atleast_1d(axes)
+
+    for row, label in enumerate(model_names):
+        data = fem_data if row == 0 else pinn_data_list[row - 1]
+        U_q, V_q, M_q = _extract_velocity(data, idx)
+
+        norm_mag = np.where(M_q > 0, M_q, 1e-12)
+        M_norm = M_q / np.max(M_q) if np.max(M_q) > 0 else M_q
+        length_mod = 0.5 + 1.1 * np.sqrt(M_norm)
+        U_s = U_q / norm_mag * length_mod
+        V_s = V_q / norm_mag * length_mod
+
+        qv = axes[row].quiver(
+            X_q, Y_q,
+            U_s, V_s,
+            M_q,
+            cmap=CMAP_VAR,
+            clim=(0, vmax),
+            scale=nx_q * 1.25,
+            scale_units="width",
+            width=0.003,
+            headwidth=4,
+            headlength=5,
+        )
+        plt.colorbar(qv, ax=axes[row], label=r"$\|\mathbf{v}\|$")
+
+        if a is not None and b is not None:
+            ellipse_patch = Ellipse(
+                xy=(cfg.x_c, cfg.y_c),
+                width=a * 2,
+                height=b * 2,
+                edgecolor="black",
+                facecolor="none",
+                linestyle="-",
+                linewidth=1.0,
+                zorder=5,
+            )
+            axes[row].add_patch(ellipse_patch)
+
+        axes[row].set_xlim(-cfg.L / 2, cfg.L / 2)
+        axes[row].set_ylim(0, cfg.H_max)
+        axes[row].set_aspect("equal")
+        axes[row].set_xlabel("$x$")
+        axes[row].set_ylabel("$y$")
+        axes[row].set_title(f"{label} velocity field $\\mathbf{{v}}(x,y)$")
+
+    fname = output_dir / f"quiver_{tag}_comparison.png"
+    fig.savefig(fname, dpi=FIG_DPI)
+    plt.close(fig)
 
 
 
@@ -747,7 +897,7 @@ def _extract_error_summary(summary_path,
                            variables: list = ["u", "v", "p"],
                            metrics: list = ["L2", "L_inf", "MSE"],
                            aggregate_metrics: list = ["mean_L2", "max_L_inf"],
-                           strategies: list | None = None):
+                           strategies: bool = True):
     """
     Extract the entire summary_train.json into a tidy DataFrame.
     Each row represents one variable/metric or aggregate-metric value for a single run.
@@ -786,7 +936,7 @@ def _extract_error_summary(summary_path,
 
     rows = []
     for entry in errors.values():
-        if strategies:  
+        if strategies:
             # need to descend one level deeper through strategy keys
             for strat, data in entry.items():
                 rows.extend(extract_geometry(data, strat))
@@ -798,10 +948,7 @@ def _extract_error_summary(summary_path,
 
     df = pd.DataFrame(rows)
     
-    if strategies:
-        return df.sort_values(by=["a", "b", "strategy", "variable", "metric"], ignore_index=True)
-    else:
-        return df.sort_values(by=["a", "b", "variable", "metric"], ignore_index=True)
+    return df.sort_values(by=["a", "b", "variable", "metric"], ignore_index=True)
 
 
 # --- Error Comparison Point Plots ---
@@ -816,7 +963,7 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
         parameter: string specifying the parameter of interest, choices = ["ab", "a", "b", "strategy"]
         fixed_ab:  specified list of [a,b] to use across n; discards other geometries. If None, takes average errors across all (a,b). Requires variable="n".
         fixed_strat: specified name of a prediction strategy to use across (a,b); discards other strategies. If None, takes average errors across all strategies. Requires variable!="".
-        strategies: include if comparing test set errors keyed by strategies
+        strategies: list of strategies in desired order, if dictionary has an additional key layer of strategies
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -842,13 +989,15 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
     PARAMETER_LABELS = {
         "a": "ellipse width (a)",
         "b": "ellipse height (b)",
-        "ab": "ellipse geometry (a, b)",
+        "ab": "ellipse (a, b)",
         "strategy": "PINN prediction strategy",
     }
 
     error_df = _extract_error_summary(summary_path, VARS, METRICS, 
                                       AGGREGATE_METRICS, strategies=strategies)
-
+    if strategies:
+            error_df['strategy'] = pd.Categorical(error_df['strategy'], strategies)
+    
     # filter to specified value of free parameter, if applicable
     if fixed_ab is not None:
         error_df = error_df[(error_df["a"].astype(float) == float(fixed_ab[0])) & (error_df["b"].astype(float) == float(fixed_ab[1]))]
@@ -872,7 +1021,7 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
 
     if averaging:
         error_df = error_df.groupby(["parameter_value", "variable", "metric"], observed=True, as_index=False)["value"].mean()
-
+    
     parameter_order = error_df["parameter_value"].drop_duplicates().tolist()
     
     # Plot variable-level metrics
@@ -893,7 +1042,12 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
             dodge=True,
         )
         ax.tick_params("x", rotation=45, rotation_mode="xtick")
-        plt.xlabel(PARAMETER_LABELS[parameter])
+        ax.set_xlabel(PARAMETER_LABELS[parameter], labelpad=18)
+        if parameter == "ab":
+            ax.text(0.01, -0.32, "smallest", transform=ax.transAxes,
+                    ha="left", va="top", fontsize=10)
+            ax.text(0.99, -0.32, "largest", transform=ax.transAxes,
+                    ha="right", va="top", fontsize=10)
         plt.ylabel(metric)
         
         # label based on args
@@ -930,7 +1084,12 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
             color=COLOR_AGGREGATE
         )
         ax.tick_params("x", rotation=45, rotation_mode="xtick")
-        plt.xlabel(PARAMETER_LABELS[parameter])
+        ax.set_xlabel(PARAMETER_LABELS[parameter], labelpad=18)
+        if parameter == "ab":
+            ax.text(0.01, -0.32, "smallest", transform=ax.transAxes,
+                    ha="left", va="top", fontsize=10)
+            ax.text(0.99, -0.32, "largest", transform=ax.transAxes,
+                    ha="right", va="top", fontsize=10)
         plt.ylabel(aggmetric)
         
         # label based on args
@@ -956,7 +1115,9 @@ def plot_error_comparison(summary_path, output_dir, cfg, parameter,
     
 
 # --- Error Comparison Heatmaps ---
-def plot_error_comparison_2d(summary_path, output_dir, cfg, index_parameter="strategy", col_parameter="ab"):
+def plot_error_comparison_2d(summary_path, output_dir, cfg, 
+                             index_parameter="strategy", col_parameter="ab",
+                             strategy_order: list = None):
     """
     Create 2D grid heatmaps of errors for all combinations of two parameters.
     Args:
@@ -974,12 +1135,14 @@ def plot_error_comparison_2d(summary_path, output_dir, cfg, index_parameter="str
         "strategy": "prediction strategy",
         "a": "ellipse width (a)",
         "b": "ellipse height (b)",
-        "ab": "ellipse geometry (a, b)"
+        "ab": "ellipse (a, b)"
     }
     
     # cols are a, b, n, variable, metric, value
     error_df = _extract_error_summary(summary_path, VARS, METRICS, 
                                       AGGREGATE_METRICS, strategies=True)
+    if strategy_order:
+        error_df['strategy'] = pd.Categorical(error_df['strategy'], strategy_order)
     
     # Create plot for each metric for each variable
     for var in VARS:
@@ -987,16 +1150,31 @@ def plot_error_comparison_2d(summary_path, output_dir, cfg, index_parameter="str
             selected = error_df[(error_df["variable"] == var) 
                                 & (error_df["metric"] == metric)]
             plot_data = selected.pivot(index=index_parameter, columns=col_parameter, values="value")
-            
-            ax = sns.heatmap(
+
+            if col_parameter == "ab":
+                width = max(10, plot_data.shape[1] * 1.5)
+            else:
+                width = 10
+            fig, ax = plt.subplots(figsize=(width, 5), dpi=FIG_DPI)
+
+            sns.heatmap(
                 plot_data,
                 cmap=CMAP_ERR,
                 annot=True,
-                linewidth=1.0
+                fmt='.3f',
+                annot_kws={'size': 18},
+                linewidth=1.0,
+                ax=ax,
             )
             
-            plt.xlabel(PARAMETER_LABELS[col_parameter])
+            ax.tick_params("x", rotation=0, rotation_mode="xtick")
+            ax.set_xlabel(PARAMETER_LABELS[col_parameter], labelpad=24)
             plt.ylabel(PARAMETER_LABELS[index_parameter])
+            if col_parameter == "ab":
+                ax.text(0.01, -0.22, "smallest", transform=ax.transAxes,
+                        ha="left", va="center", fontsize=10)
+                ax.text(0.99, -0.22, "largest", transform=ax.transAxes,
+                        ha="right", va="center", fontsize=10)
             
             # label based on args
             title = f"{metric} error for ${var}(x,y)$ across runs"
@@ -1006,33 +1184,48 @@ def plot_error_comparison_2d(summary_path, output_dir, cfg, index_parameter="str
             plt.tight_layout()
             
             savepath = output_dir / fname
-            ax.figure.savefig(savepath, dpi=FIG_DPI)
-            plt.close(ax.figure)
+            fig.savefig(savepath, dpi=FIG_DPI)
+            plt.close(fig)
     
     # Create a plot for each aggregate metric
     for aggmetric in AGGREGATE_METRICS:
             selected = error_df[(error_df["variable"] == "aggregate") 
                                 & (error_df["metric"] == aggmetric)]
             plot_data = selected.pivot(index=index_parameter, columns=col_parameter, values="value")
-            
-            ax = sns.heatmap(
+
+            if col_parameter == "ab":
+                width = max(10, plot_data.shape[1] * 1.5)
+            else:
+                width = 10
+            fig, ax = plt.subplots(figsize=(width, 5), dpi=FIG_DPI)
+
+            sns.heatmap(
                 plot_data,
                 cmap=CMAP_ERR,
                 annot=True,
-                linewidth=0.5
+                fmt='.3f',
+                annot_kws={'size': 18},
+                linewidth=0.5,
+                ax=ax,
             )
             
-            plt.xlabel(PARAMETER_LABELS[col_parameter])
+            ax.tick_params("x", rotation=0, rotation_mode="xtick")
+            ax.set_xlabel(PARAMETER_LABELS[col_parameter], labelpad=24)
             plt.ylabel(PARAMETER_LABELS[index_parameter])
+            if col_parameter == "ab":
+                ax.text(0.01, -0.22, "smallest", transform=ax.transAxes,
+                        ha="left", va="center", fontsize=10)
+                ax.text(0.99, -0.22, "largest", transform=ax.transAxes,
+                        ha="right", va="center", fontsize=10)
             
             # label based on args
-            title = f"{aggmetric} error across runs and outputs"
+            title = f"{aggmetric} error across outputs"
             fname = f"errors_heatmap_aggregate_{aggmetric}.png"
                 
             plt.title(title)
             plt.tight_layout()
             
             savepath = output_dir / fname
-            ax.figure.savefig(savepath, dpi=FIG_DPI)
-            plt.close(ax.figure)
+            fig.savefig(savepath, dpi=FIG_DPI)
+            plt.close(fig)
     
