@@ -19,22 +19,6 @@ import torch
 import deepxde as dde
 
 
-# ———————————— GLOBAL CONSTANTS ————————————
-# need these for functions called by DeepXDE, since it can't pass in custom args (such as cfg)
-
-# declare vars with placeholder:
-L = H_MAX = X_C = Y_C = U_IN_MAX = P_OUT = U_REF = RE = 0
-
-def set_global_constants(cfg):
-    globals()['L']        = cfg.L
-    globals()['H_MAX']    = cfg.H_max
-    globals()['X_C']      = cfg.x_c
-    globals()['Y_C']      = cfg.y_c
-    globals()['U_IN_MAX'] = cfg.u_in_max
-    globals()['P_OUT']    = cfg.P_out
-    globals()['U_REF']    = cfg.U_ref
-    globals()['RE']       = cfg.Re
-
 
 # ———————————— PINN HELPER FUNCTIONS ————————————
 
