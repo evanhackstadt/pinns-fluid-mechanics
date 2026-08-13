@@ -34,6 +34,17 @@ from deeponet import inlet_u_values
 # ———————————— FEM FUNCTIONS ————————————
 
 # --- Sub-function 1 ---
+def read_mesh(msh_file):
+    msh_path = Path(msh_file)
+    msh, cell_t, facet_tags, edge_t, vtx_t, phys_g = gmshio.read_from_msh(
+        str(msh_path), MPI.COMM_WORLD, gdim=2
+    )
+    msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
+    
+    return msh, facet_tags
+
+
+# --- Sub-function 2 ---
 def build_function_space_and_bcs(msh, facet_tags, cfg):
     
     # --- Function space ---
@@ -115,7 +126,7 @@ def build_function_space_and_bcs(msh, facet_tags, cfg):
     return W, bcs, ds, n
 
 
-# --- Sub-function 2 ---
+# --- Sub-function 3 ---
 def solve_navier_stokes(W, msh, bcs, ds, n, cfg, w_init=None):
     """Solve full N-S using Stokes solution as initial condition."""
     
@@ -178,11 +189,8 @@ def solve_navier_stokes(W, msh, bcs, ds, n, cfg, w_init=None):
 
 # --- FEM Solver ---
 def solve_stenosis(cfg, msh_file):
-    msh_path = Path(msh_file)
-    msh, cell_t, facet_tags, edge_t, vtx_t, phys_g = gmshio.read_from_msh(
-        str(msh_path), MPI.COMM_WORLD, gdim=2
-    )
-    msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
+    
+    msh, facet_tags = process_mesh(msh_file)
 
     W, bcs, ds, n = build_function_space_and_bcs(msh, facet_tags, cfg)
 

@@ -23,7 +23,7 @@ import deepxde as dde
 
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
-from fem import solve_stenosis, fem_predict
+from fem import read_mesh, solve_stenosis, fem_predict
 from deeponet import *
 from analysis import *
 
@@ -96,9 +96,9 @@ def load_or_cache_fem(cfg: StenosisConfig, a: float, b: float,
         skip_fem: whether or not to skip the live fem solve.
     Returns:
         fem_data: ground-truth array of shape (nx*ny - ellipse pts, 5) = [x,y,u,v,p]
+        msh: mesh loaded from file
         u_sol: if fem not skipped, return FEniCS u solution object
         p_sol: if fem not skipped, return FEniCS p solution object
-        msh:   if fem not skipped, return FEniCS mesh
     """
         
     tag = cfg.geo_tag(a, b)
@@ -106,9 +106,12 @@ def load_or_cache_fem(cfg: StenosisConfig, a: float, b: float,
     
     if skip_fem and fem_file.exists():
         print(f"Skipping FEM since existing FEM file found: {fem_file.name}")
-        fem_file = np.load(fem_file, allow_pickle=True).astype(np.float32)
-        fem_data = fem_file['data']
-        return fem_data, None, None, None
+        fem_data = np.load(fem_file, allow_pickle=True).astype(np.float32)
+        
+        # still process mesh
+        msh, _ = read_mesh(msh_file)
+        
+        return fem_data, None, None, msh
     
     elif not skip_fem:
         
@@ -163,6 +166,14 @@ def load_or_cache_trunk(cfg: StenosisConfig, fem_data_dict: dict,
                         msh_dict: dict, tag: str, force: bool = False):
     """
     Create and return PDE data, trunk points, labeled output array, and extended trunk (with obstacle pts appended)
+    
+    Parameters
+    ----------
+        cfg                  : StenosisConfig
+        fem_data_dict        : {(a,b): (N_fem_pts, 5)} — cached FEM data (for reference)
+        u_sol_dict           : {(a,b): dolfinx velocity solution object}
+        p_sol_dict           : {(a,b): dolfinx pressure solution object}
+        msh_dict             : {(a,b): dolfinx mesh object}
     """
     
     # PDE data object
@@ -177,7 +188,7 @@ def load_or_cache_trunk(cfg: StenosisConfig, fem_data_dict: dict,
     # extended trunk (query pts + channel boundary pts + obstacle pts from the first geo)
     arr_path = cfg.data_dir / f"deeponet_trunk_labeled_{tag}.npy"
     ext_trunk_path = cfg.data_dir / f"deeponet_trunk_extended_{tag}.csv"
-    use_cache = u_sol_dict is None or p_sol_dict is None or msh_dict is None
+    use_cache = (None in u_sol_dict.values()) or (None in p_sol_dict.values())
     
     if not force and arr_path.exists() and ext_trunk_path.exists():
         print(f"Loading labeled array from {arr_path.name} and extended trunk from {ext_trunk_path.name}")
@@ -520,7 +531,7 @@ def main():
         
         for (a, b) in cfg.train_geometries:
             msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
-            fem_data, u_sol, p_sol, msh = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
+            fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
             
             fem_data_dict_train[(a, b)] = fem_data
             fem_sol_objects_train['u'][(a, b)] = u_sol
@@ -529,7 +540,7 @@ def main():
         
         for (a, b) in cfg.test_geometries:
             msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
-            fem_data, u_sol, p_sol, msh = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
+            fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
             
             fem_data_dict_test[(a, b)] = fem_data
             fem_sol_objects_test['u'][(a, b)] = u_sol
