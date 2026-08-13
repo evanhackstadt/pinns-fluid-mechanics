@@ -6,6 +6,9 @@ Rugonyi Lab
 ## Added Complexity from Scenario 5
 
 - Uses a Physics-Informed Deep Operator Network instead of a standard PINN
+- No geometry parameters (a, b) as inputs - instead, stenosis SDF --> branch net
+- Training data organized as (N_geom, N_sensors) branch array + (M_points, 2) trunk array
+- PDE loss computed through trunk net autodiff only (trunk takes spatial coords)
 
 ## Spatial domain
 
@@ -22,19 +25,29 @@ Rugonyi Lab
 
 ## Data Breakdown
 
-- x
+- For each training geometry:
+  - Evaluate SDF at each n_sensor points
+  - Pick query points (x, y)
+- Assemble N x M matrix (Cartesian Product) to train on all simultaneously
 
 ## PI-DeepONet Model
 
 - Physics-Informed Deep Operator Network
-- Inputs - Branch Net Functions:
-  - stenosis (encoded by signed distance function to obstruction), d(x, y)
-  - inlet velocity BC, u(x, y)
-  - no-slip walls x-velocity BC, u(x, y)
-  - no-slip walls v-velocity BC, v(x, y)
-  - outlet pressure BC, p(x, y)
-- Inputs - Trunk Net Points:
-  - query point (x, y)
+  - learns operator: geometry SDF field --> solution (u,v,p) field
+- Architecture
+  - Branch Net
+    - Input: stenosis SDF (signed distance function) discretized on n_sensors
+    - Output: latent representation
+  - Trunk Net
+    - Input: query points (x, y)
+    - Output: latent representation
+  - Fusion:
+    - inner product + bias --> (u, v, p) at query point
+    - repeated for all N_geometries x M_points pairs (Cartesian product)
+- Inputs - Branch Net:
+  - stenosis SDF (signed distance function), d(x, y), sampled on a fixed grid
+- Inputs - Trunk Net:
+  - query points (x, y)
 - Outputs:
   - solution field (u, v, p) = (x-velocity, y-velocity, pressure)
 - Data:

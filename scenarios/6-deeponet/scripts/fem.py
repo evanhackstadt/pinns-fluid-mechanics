@@ -1,7 +1,7 @@
 # fem.py
 
 """
-2D Stenosis Geometry-Conditioned PINN
+2D Stenosis Physics-Informed Deep Operator Network
     Ground truth Finite Element Method (FEM) using FEniCS / dolfinx library
 
 Evan Hackstadt
@@ -28,15 +28,13 @@ from basix.ufl import element, mixed_element
 from ufl import split, TestFunctions, derivative, dx, grad, div, inner
 from petsc4py import PETSc
 
-from pinn import inlet_u, set_global_constants
+from deeponet import inlet_u_values
 
 
 # ———————————— FEM FUNCTIONS ————————————
 
 # --- Sub-function 1 ---
 def build_function_space_and_bcs(msh, facet_tags, cfg):
-    # inlet_u() needs global H_MAX on the call stack
-    set_global_constants(cfg)
     
     # --- Function space ---
     
@@ -88,7 +86,7 @@ def build_function_space_and_bcs(msh, facet_tags, cfg):
 
     def inlet_profile(x):
         pts = np.asarray(x).T
-        profile = inlet_u(cfg)(pts).reshape(-1)      # function from pinn.py
+        profile = inlet_u_values(cfg)(pts).reshape(-1)      # function from deeponet.py
         return np.vstack((profile, np.zeros_like(profile)))
 
     u_in.interpolate(inlet_profile)
@@ -230,8 +228,8 @@ def fem_predict(u_sol, p_sol, msh, query: np.ndarray, cfg):
     p_vals = p_sol.eval(points_on_proc, cells)  # shape (N, 1)
     
     # Nondimensionalization
-    u_vals /= cfg.U_ref
-    v_vals /= cfg.U_ref
-    p_vals /= cfg.U_ref**2
+    u_vals /= cfg.u_ref
+    v_vals /= cfg.u_ref
+    p_vals /= cfg.u_ref**2
 
     return np.concatenate([query_f32, u_vals, v_vals, p_vals], axis=1)

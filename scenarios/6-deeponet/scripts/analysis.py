@@ -1,7 +1,7 @@
 # analysis.py
 
 """
-2D Stenosis Geometry-Conditioned PINN
+2D Stenosis Physics-Informed Deep Operator Network
     Analysis and visualization functions
 
 Evan Hackstadt
@@ -21,7 +21,6 @@ from matplotlib.patches import Ellipse
 import seaborn as sns
 
 from geometry import ellipse_mask
-from data import array_mask_ab
 
 
 PALETTE_DEEP = sns.color_palette("deep").as_hex()
@@ -195,6 +194,13 @@ def plot_loss_curves(loss_data, output_dir,
     plt.close()
         
 
+# --- Data Helper Function ---
+def _array_mask_ab(array, a, b, a_idx = 2, b_idx = 3, inverse: bool = False):
+    mask = np.isclose(array[:, a_idx], a) & np.isclose(array[:, b_idx], b)
+    if inverse:
+        return array[~mask]
+    else:
+        return array[mask]
 
 # --- Plot Domain ---
 def plot_domain(cfg, a, b, output_dir, labeled_pts = None, 
@@ -228,11 +234,11 @@ def plot_domain(cfg, a, b, output_dir, labeled_pts = None,
         components = ["u", "v", "p"]
         lb_cmp = ', '.join([components[i] for i in cfg.test_observation_components])
         
-        pts_this_ab  = array_mask_ab(labeled_pts, a, b, 2, 3)
+        pts_this_ab  = _array_mask_ab(labeled_pts, a, b, 2, 3)
         plt.scatter(pts_this_ab[:, 0], pts_this_ab[:, 1], 
                     s=25, c=COLOR_PINN, label='This geometry')
         if plot_other_geos_labeled:
-            pts_other_ab = array_mask_ab(labeled_pts, a, b, 2, 3, inverse=True)
+            pts_other_ab = _array_mask_ab(labeled_pts, a, b, 2, 3, inverse=True)
             plt.scatter(pts_other_ab[:, 0], pts_other_ab[:, 1], 
                         s=25, c='grey', alpha=0.3, label='Other geometries')
             plt.legend()
@@ -318,8 +324,8 @@ def plot_all_domains(cfg, output_dir, show_train=True, show_test=True):
 # --- Helper: Format Data ---
 def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
     # Reconstruct the original uniform grid axes
-    xs = np.linspace(-cfg.L/2, cfg.L/2, cfg.nx)
-    ys = np.linspace(0, cfg.H_max, cfg.ny)
+    xs = np.linspace(-cfg.L/2, cfg.L/2, cfg.query_nx)
+    ys = np.linspace(0, cfg.H_max, cfg.query_ny)
     XX, YY = np.meshgrid(xs, ys)
     flat_x, flat_y = XX.ravel(), YY.ravel()
 
@@ -329,7 +335,7 @@ def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
     # Fill in values at valid points (outside ellipse)
     Z_flat[outside] = values
     # Mesh
-    ZZ = Z_flat.reshape(cfg.ny, cfg.nx)
+    ZZ = Z_flat.reshape(cfg.query_ny, cfg.query_nx)
 
     return XX, YY, ZZ
 

@@ -1,7 +1,7 @@
 # geometry.py
 
 """
-2D Stenosis Geometry-Conditioned PINN
+2D Stenosis Physics-Informed Deep Operator Network
     Geometry functions to generate mesh and handle ellipse geometry
 
 Evan Hackstadt

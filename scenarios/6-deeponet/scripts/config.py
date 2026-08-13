@@ -1,7 +1,7 @@
 # config.py
 
 """
-2D Stenosis Geometry-Conditioned PINN
+2D Stenosis - Physics-Informed Deep Operator Network
     Custom config defining key parameters for the problem setup.
 
 Evan Hackstadt
@@ -47,93 +47,44 @@ class StenosisConfig:
     # --- Physics ---
     Re: float = 100         # Reynold's number = rho•U•L/µ, for nondimensionalization
     u_in_max: float = 1.0   # max inlet velocity (will be at H/2 centerline)
-    P_out: float = 0.0      # outlet pressure
-    U_ref: float = 1.0      # rerence x-velocity for nondimensionalization
+    p_out: float = 0.0      # outlet pressure
+    u_ref: float = 1.0      # rerence x-velocity for nondimensionalization
                             # P_ref = rho * U_ref^2, with rho=1 --> P_ref = 1.0
     
     
-    # --- PINN ---
+    # --- DeepONet ---
     seed: int = 0
+    sensor_nx = 40      # fixed grid to sample SDF input function,
+    sensor_ny = 20      # held constant across geos b/c Cartesian Product
+    # Default 40x20 = 800 sensors
+    
     n_interior: int = 2000      # default 2000, can tune. Fed to PDE loss.
     n_boundary: int = 800       # default 800, can tune. Fed to BC loss.
-    n_labeled_train: int = 10   # default 10, can tune.
-    uniform_frac: float = 0.3
+    n_obstacle: int = 100       # default 200, can tune.
+    n_test: int = 800
     
-    layers: List[int] = field(default_factory=lambda: [4, 128, 128, 3])     # (x,y,a,b)->...->(u,v,p)
+    branch_net_hidden_layers: List[int] = field(
+        default_factory=lambda: [256, 256, 128]     # neurons between input and latent dimension
+        # Larger first layer because N_sensors (800) is the raw input
+    )
+    trunk_net_hidden_layers: List[int] = field(
+        default_factory=lambda: [128, 128, 128]     # neurons between input and latent dimension
+    )
+    loss_weights_deeponet: List[float] = field(     # will be reweighted dynamically during training
+        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
+                                 5, 5,          # bc_inlet_u, bc_inlet_v
+                                 25, 25,        # bc_wall_u, bc_wall_v
+                                 5]             # bc_outlet_p
+    )
     
     # train adam
     n_adam: int = 25000         # train for N iterations with Adam
     lr: float = 1e-3            # Adam learning rate
-    loss_weights_adam: List[float] = field(     # will be reweighted dynamically during training
-        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
-                                 5, 5,          # bc_inlet_u, bc_inlet_v
-                                 # no-slip walls are important hard constraints:
-                                 25, 25,        # bc_wall_u, bc_wall_v
-                                 25, 25,        # bc_obstacle_u, bc_obstacle_v
-                                 5,             # bc_outlet_p
-                                 10, 10, 10]    # bc_obs_u, bc_obs_v, bc_obs_p
-    )
     
     # train l-bfgs
     n_lbfgs: int = 25000        # max iterations on L-BFGS
     gtol_lbfgs: float = 1e-10   # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0
-    
-    # fine-tuning
-    finetune_strategies: Dict = field(
-        default_factory=lambda: {
-            # "hardbc": {
-            #     "finetune": False, 
-            #     "anchor": False, 
-            #     "hardbc": True
-            # },
-            "finetune": {
-                "finetune": True, 
-                "anchor": False, 
-                "hardbc": False,
-            },
-            # "finetune+anchor": {
-            #     "finetune": True, 
-            #     "anchor": True, 
-            #     "hardbc": False,
-            # },
-            # "finetune+hardbc": {
-            #     "finetune": True, 
-            #     "anchor": False, 
-            #     "hardbc": True
-            # },
-            # "finetune+anchor+hardbc": {
-            #     "finetune": True, 
-            #     "anchor": True, 
-            #     "hardbc": True
-            # },
-        }
-    )
-    n_adam_finetune: int = 3000
-    lr_finetune: float = 1e-5
-    lambda_anchor: float = 0.1     # weight regularization strength
-    hard_bc_influence_fraction: float = 0.20    # % of channel length over which hard BCs decay to 1%
-    
-    n_labeled_test:  int = 5    # default 5, can tune
-    # OPTIONALLY specify approx coords of observations rather than random sampling
-    test_observation_coords: List[Tuple[float, float]] = field(
-        default_factory=lambda: [
-            (-0.6, 0.7),    # upstream
-            (-0.5, 0.3),    # upstream
-            (0.0, 0.25),    # middle
-            (0.6, 0.4),     # downstream
-            (0.7, 0.8),     # downstream
-        ]
-    )
-    test_observation_components: List[int] = field(
-        # 0=u, 1=v, 2=p; currently just use v to simulate doppler
-        default_factory=lambda: [1]
-    )
-    test_observation_weights: List[float] = field(
-        # bc_obs_v - add terms if including more components
-        # need large weight to fight thousands of collocation points, but LossReweighter will handle anyways
-        default_factory=lambda: [1000]
-    )
     
     
     # --- FEM ---
@@ -141,13 +92,13 @@ class StenosisConfig:
     
     
     # --- Visualization ---
-    nx = 200    # heatmap mesh
-    ny = 100
+    query_nx = 200    # FEM and heatmap mesh
+    query_ny = 100
     
     
     # --- Path Management ---
     '''
-    5-geometry-conditioned/
+    6-deeponet/
         fem/
             labeled_data_train_geometries.csv
             labeled_data_test_geometries.csv
@@ -157,12 +108,12 @@ class StenosisConfig:
         results/
             config_log.json
             error_summary/
-            pinn/
+            deeponet/
                 training_log.json
                 *.pt
                 *.dat
                 loss_curves*.png
-            test_geometries/...geos.../...strategies.../
+            test_geometries/...geos.../
             train_geometries/...geos.../
         scripts/
     '''
@@ -187,7 +138,7 @@ class StenosisConfig:
     
     @property
     def pinn_dir(self) -> Path:
-        return self.results_dir / "pinn"
+        return self.results_dir / "deeponet"
     
     @property 
     def summary_dir(self) -> Path:
@@ -216,13 +167,6 @@ class StenosisConfig:
             return self.results_dir / self.train_or_test(a, b) / self.geo_tag(a, b)
         else:
             return None
-    
-    def plots_geo_strategy_dirs(self, a, b):
-        parent = self.geo_dir(a, b)
-        dirs = {"parent": parent, "baseline": parent / "baseline"}
-        for strat in self.finetune_strategies:
-            dirs[strat] = parent / strat
-        return dirs
 
     
     def make_all_dirs(self):
@@ -233,15 +177,10 @@ class StenosisConfig:
         self.pinn_dir.mkdir(parents=True, exist_ok=True)
         self.summary_dir.mkdir(parents=True, exist_ok=True)
         
-        for strat in self.finetune_strategies.keys():
-            for (a, b) in self.test_geometries:
-                d = self.pinn_dir / strat / self.geo_tag(a, b)
-                d.mkdir(parents=True, exist_ok=True)
         for (a, b) in self.train_geometries:
             self.geo_dir(a, b).mkdir(parents=True, exist_ok=True)
         for (a, b) in self.test_geometries:
-            for d in self.plots_geo_strategy_dirs(a, b).values():
-                d.mkdir(parents=True, exist_ok=True)
+            self.geo_dir(a, b).mkdir(parents=True, exist_ok=True)
     
     def clear_dir(self, target):
         target.mkdir(parents=True, exist_ok=True)
