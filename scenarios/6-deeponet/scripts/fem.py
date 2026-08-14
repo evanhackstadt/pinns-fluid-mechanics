@@ -190,7 +190,7 @@ def solve_navier_stokes(W, msh, bcs, ds, n, cfg, w_init=None):
 # --- FEM Solver ---
 def solve_stenosis(cfg, msh_file):
     
-    msh, facet_tags = process_mesh(msh_file)
+    msh, facet_tags = read_mesh(msh_file)
 
     W, bcs, ds, n = build_function_space_and_bcs(msh, facet_tags, cfg)
 

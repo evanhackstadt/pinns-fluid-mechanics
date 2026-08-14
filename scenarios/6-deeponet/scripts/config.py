@@ -137,7 +137,7 @@ class StenosisConfig:
         return self.base_dir / "results"
     
     @property
-    def pinn_dir(self) -> Path:
+    def deeponet_dir(self) -> Path:
         return self.results_dir / "deeponet"
     
     @property 
@@ -174,7 +174,7 @@ class StenosisConfig:
         self.fem_dir.mkdir(parents=True, exist_ok=True)
         self.meshes_dir.mkdir(parents=True, exist_ok=True)
         self.results_dir.mkdir(parents=True, exist_ok=True)
-        self.pinn_dir.mkdir(parents=True, exist_ok=True)
+        self.deeponet_dir.mkdir(parents=True, exist_ok=True)
         self.summary_dir.mkdir(parents=True, exist_ok=True)
         
         for (a, b) in self.train_geometries:

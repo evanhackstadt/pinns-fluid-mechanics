@@ -70,15 +70,15 @@ def compute_errors(pinn_data, fem_data):
         l_inf  = np.max(np.abs(diff))
         # store
         errors[variable] = {
-            "L2": l2_rel,
-            "L_inf": l_inf,
+            "L2": float(l2_rel),
+            "L_inf": float(l_inf),
         }
     
     # store aggregated error across variables (mean L2, max L_inf)
     mean_L2 = np.mean([errors[var]["L2"] for var in VARS])
     max_L_inf = np.max([errors[var]["L_inf"] for var in VARS])
-    errors["aggregate"] = {"mean_L2": mean_L2, 
-                           "max_L_inf": max_L_inf}
+    errors["aggregate"] = {"mean_L2": float(mean_L2), 
+                           "max_L_inf": float(max_L_inf)}
     
     return errors
 

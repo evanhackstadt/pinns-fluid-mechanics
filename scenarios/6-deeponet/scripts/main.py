@@ -236,14 +236,14 @@ def load_or_train_deeponet(cfg: StenosisConfig,
     Returns:
         trained_model: DeepXDE model object with trained weights / parameters
     """
-    model_prefix = cfg.pinn_dir / "model"
+    model_prefix = cfg.deeponet_dir / "model"
     
     model = build_deeponet_model(cfg.train_geometries, pde_data, sensors,
                                  extended_trunk, output_arr, cfg)
     
     # proxy for train completion: saved model and training log
     existing_models = glob.glob(f"{model_prefix}*.pt")
-    log_file = cfg.pinn_dir / "training_log.json"
+    log_file = cfg.deeponet_dir / "training_log.json"
     rerun = False if len(existing_models) > 0 and log_file.exists() else True
     
     # train / restore
@@ -260,7 +260,7 @@ def load_or_train_deeponet(cfg: StenosisConfig,
 
 
 # --- 7. DeepONet Predict on Training Set ---
-def deeponet_predict(fem_data_dict, model, sensors, label, cfg: StenosisConfig):
+def predict_and_save_errors(fem_data_dict, model, sensors, label, cfg: StenosisConfig):
     """
     Evaluate the model on each provided geometry, compare to ground truth, and save errors.
     Args:
@@ -342,17 +342,16 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
         
         plot_domain(cfg, a, b, output_dir)
         
-        # baseline
-        output_dir_baseline = cfg.geo_dir(a, b) / "baseline"
-        deeponet_data = deeponet_data_dict_test[(a, b)]["baseline"]
+        output_dir = cfg.geo_dir(a, b)
+        deeponet_data = deeponet_data_dict_test[(a, b)]
         fem_data = fem_data_dict_test[(a, b)]
         
         plot_output_heatmaps(deeponet_data, fem_data, cfg, tag, 
-                             output_dir_baseline, a, b, separate_plots=False)
+                             output_dir, a, b, separate_plots=False)
         plot_error_heatmaps(deeponet_data, fem_data, cfg, tag, 
-                            output_dir_baseline, a, b, separate_plots=False)
+                            output_dir, a, b, separate_plots=False)
         plot_velocity_quiver(deeponet_data, fem_data, cfg, tag,
-                             output_dir_baseline, a, b)
+                             output_dir, a, b)
         
         '''
         strategy_labels = ["baseline"]
@@ -386,7 +385,7 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                 obs_labels = ["BC (observed u)", "BC (observed v)", "BC (observed p)"]
                 loss_term_labels.extend([obs_labels[i] for i in cfg.test_observation_components])
                 
-                loss_file = cfg.pinn_dir / strategy / cfg.geo_tag(a,b) / "loss.dat"
+                loss_file = cfg.deeponet_dir / strategy / cfg.geo_tag(a,b) / "loss.dat"
                 loss_data = np.loadtxt(loss_file, delimiter=" ", comments="#")
                 plot_loss_curves(loss_data, loss_file.parent, loss_term_labels)
 
@@ -416,24 +415,23 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
     plot_all_domains(cfg, cfg.results_dir)
     
     # plot main training loss curves
-    loss_data = np.loadtxt(cfg.pinn_dir / "loss.dat", delimiter=" ", comments="#")
-    plot_loss_curves(loss_data, cfg.pinn_dir)
+    loss_data = np.loadtxt(cfg.deeponet_dir / "loss.dat", delimiter=" ", comments="#")
+    plot_loss_curves(loss_data, cfg.deeponet_dir,
+                     loss_term_labels=["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
+                                       "BC (inlet u)", "BC (inlet v)", 
+                                       "BC (wall u)", "BC (wall v)",
+                                       "BC (outlet p)"])
     
     # compare train & test errors separately
     output_dir = cfg.summary_dir / "train"
     plot_error_comparison(train_error_summary_path, output_dir, cfg, 
-                          parameter="ab", fixed_strat=None, strategies=["train"])
+                          parameter="ab", fixed_strat=None, strategies=None)
     
     output_dir = cfg.summary_dir / "test"
-    test_strats = ["baseline"] + list(cfg.finetune_strategies.keys())
     plot_error_comparison(test_error_summary_path, output_dir, cfg, 
                           parameter="ab", fixed_strat=None, 
-                          strategies=test_strats)
-    plot_error_comparison(test_error_summary_path, output_dir, cfg, 
-                          parameter="strategy", fixed_ab=None,
-                          strategies=test_strats)
-    plot_error_comparison_2d(test_error_summary_path, output_dir, cfg, 
-                             strategy_order=test_strats)
+                          strategies=None)
+    # plot_error_comparison_2d(test_error_summary_path, output_dir, cfg, strategy_order=test_strats)
     
     # compare train + test errors side-by-side
     with open(train_error_summary_path, "r", encoding="utf-8") as f:
@@ -447,13 +445,11 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
         json.dump(all_errors, f, indent=2)
     
     output_dir = cfg.summary_dir / "all"
-    all_strategies = ["train"] + test_strats
     plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="ab",
-                          fixed_strat=None, strategies=all_strategies)
+                          fixed_strat=None, strategies=None)
     plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="strategy",
-                          fixed_ab=None, strategies=all_strategies)
-    plot_error_comparison_2d(all_error_summary_path, output_dir, cfg,
-                             strategy_order=all_strategies)
+                          fixed_ab=None, strategies=None)
+    # plot_error_comparison_2d(all_error_summary_path, output_dir, cfg, strategy_order=all_strategies)
     
     # log config
     config_dict = cfg.config_as_dict()
@@ -570,23 +566,25 @@ def main():
         
         
         # Stage 6: Evaluate on Training Geometries
-        deeponet_data_dict_train, summary_train = deeponet_predict(fem_data_dict_train, 
-                                                                   trained_model, 
-                                                                   sensors, 
-                                                                   "train", 
-                                                                   cfg)
+        deeponet_data_dict_train, summary_train = predict_and_save_errors(fem_data_dict_train, 
+                                                                          trained_model, 
+                                                                          sensors, 
+                                                                          "train", 
+                                                                          cfg)
         # Stage 8: Evaluate on Testing Geometries
-        deeponet_data_dict_test, summary_test = deeponet_predict(fem_data_dict_test, 
-                                                                 trained_model, 
-                                                                 sensors, 
-                                                                 "test", 
-                                                                 cfg)
+        deeponet_data_dict_test, summary_test = predict_and_save_errors(fem_data_dict_test, 
+                                                                        trained_model, 
+                                                                        sensors, 
+                                                                        "test", 
+                                                                        cfg)
         
         
         # Stage 9: Analysis and Visualization
         visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                       fem_data_dict_train, fem_data_dict_test,
                       summary_train, summary_test, cfg)
+        
+        # Stage 10: Analysis and Visualization - alongside Scneario 5 PINN
         
         print(f"\n{'='*50}\nPIPELINE COMPLETE\n{'='*50}")
     
