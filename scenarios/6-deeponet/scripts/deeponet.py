@@ -479,7 +479,7 @@ def build_deeponet_model(
     extended_trunk: np.ndarray,
     output_arr: np.ndarray,
     cfg: StenosisConfig,
-    p: int = 120,               # TODO CHANGE BACK TO 128
+    p: int = 128,
 ) -> dde.Model:
     """
     Instantiate the PI-DeepONet model.
