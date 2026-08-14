@@ -54,6 +54,21 @@ from config import StenosisConfig
 # SECTION 1: BOUNDARY CONDITIONS
 # ─────────────────────────────────────────────────────────────
 
+def build_intersection_geometry(cfg: StenosisConfig, geometries: list[tuple] = None):
+    """
+    Construct the CSG Difference (rectangle - largest ellipse obstruction) dde.geometry object
+    Takes intersection of all fluid domains, i.e. uses largest ellipse as the obstruction.
+    """
+    
+    selected_geos = geometries if geometries is not None else cfg.train_geometries
+    largest_a, largest_b = find_largest_ellipse(selected_geos)
+    
+    channel = dde.geometry.Rectangle([-cfg.L/2, 0], [cfg.L/2, cfg.H_max])
+    obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], largest_a, largest_b)
+    trunk_geom  = dde.geometry.CSGDifference(channel, obstruction)
+    
+    return trunk_geom
+
 def inlet_u_values(cfg):
     U_IN_MAX = cfg.u_in_max
     U_REF = cfg.u_ref
@@ -67,7 +82,7 @@ def inlet_u_values(cfg):
     return function
 
 
-def build_channel_bcs(trunk_pts: np.ndarray, cfg: StenosisConfig) -> list:
+def build_channel_bcs(boundary_pts: np.ndarray, cfg: StenosisConfig) -> list:
     """
     Construct PointSetBCs for the geometry-INDEPENDENT boundary conditions
     (inlet, bottom wall, top wall, outlet) from the shared trunk points.
@@ -79,7 +94,7 @@ def build_channel_bcs(trunk_pts: np.ndarray, cfg: StenosisConfig) -> list:
  
     Parameters
     ----------
-    trunk_pts : (M, 2) shared trunk from build_shared_trunk()
+    boundary_pts : (n_boundary, 2) trunk points along shared boundary (no obstruction)
     cfg       : StenosisConfig
  
     Returns
@@ -88,7 +103,7 @@ def build_channel_bcs(trunk_pts: np.ndarray, cfg: StenosisConfig) -> list:
     top-wall outside-ellipse (u, v), outlet (p).
     """
     tol = 1e-8
-    x_q, y_q = trunk_pts[:, 0], trunk_pts[:, 1]
+    x_q, y_q = boundary_pts[:, 0], boundary_pts[:, 1]
  
     inlet_mask  = np.isclose(x_q, -cfg.L / 2, atol=tol)
     outlet_mask = np.isclose(x_q,  cfg.L / 2, atol=tol)
@@ -96,10 +111,13 @@ def build_channel_bcs(trunk_pts: np.ndarray, cfg: StenosisConfig) -> list:
     # Top wall: only points at y=H_max that are NOT inlet/outlet
     top_mask    = np.isclose(y_q, cfg.H_max, atol=tol) & ~inlet_mask & ~outlet_mask
  
-    inlet_pts   = trunk_pts[inlet_mask]
-    outlet_pts  = trunk_pts[outlet_mask]
-    bot_pts     = trunk_pts[bot_mask]
-    top_pts     = trunk_pts[top_mask]
+    inlet_pts   = boundary_pts[inlet_mask]
+    outlet_pts  = boundary_pts[outlet_mask]
+    bot_pts     = boundary_pts[bot_mask]
+    top_pts     = boundary_pts[top_mask]
+    
+    # wall pts = bot_pts, top_pts
+    wall_pts = np.concatenate([bot_pts, top_pts], axis=0)
  
     zeros = lambda pts: np.zeros((pts.shape[0], 1), dtype=np.float32)
     outlet_p_vals = np.full((outlet_pts.shape[0], 1), 
@@ -108,10 +126,8 @@ def build_channel_bcs(trunk_pts: np.ndarray, cfg: StenosisConfig) -> list:
     bcs = [
         dde.PointSetBC(inlet_pts,  inlet_u_values(cfg)(inlet_pts), component=0),
         dde.PointSetBC(inlet_pts,  zeros(inlet_pts), component=1),
-        dde.PointSetBC(bot_pts,    zeros(bot_pts),   component=0),
-        dde.PointSetBC(bot_pts,    zeros(bot_pts),   component=1),
-        dde.PointSetBC(top_pts,    zeros(top_pts),   component=0),
-        dde.PointSetBC(top_pts,    zeros(top_pts),   component=1),
+        dde.PointSetBC(wall_pts,   zeros(wall_pts),  component=0),
+        dde.PointSetBC(wall_pts,   zeros(wall_pts),  component=1),
         dde.PointSetBC(outlet_pts, outlet_p_vals,    component=2),
     ]
     return bcs
@@ -213,8 +229,34 @@ def compute_sdf(sensors: np.ndarray, cfg: StenosisConfig, a: float, b: float) ->
 # SECTION 4: TRUNK DATA
 # ─────────────────────────────────────────────────────────────
 
-# --- Obstacle Points ---
+# --- Geometry-Independent Trunk Points ---
+def sample_shared_trunk_points(cfg: StenosisConfig) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sample interior and boundary trunk points from the intersection-masked geometry.
+    Returns interior_pts (n_interior, 2) and boundary_pts (n_boundary, 2).
+    """
+    trunk_geom = build_intersection_geometry(cfg)
+    interior_pts = trunk_geom.random_points(cfg.n_interior)
+    boundary_pts = trunk_geom.random_boundary_points(cfg.n_boundary)
+    
+    # Filter: keep only channel boundary pts (inlet, outlet, top/bottom walls)
+    # Discard anything that came from the ellipse surface
+    tol = 1e-8
+    x, y = boundary_pts[:, 0], boundary_pts[:, 1]
+    channel_mask = (
+        np.isclose(x, -cfg.L/2, atol=tol) |   # inlet
+        np.isclose(x,  cfg.L/2, atol=tol) |   # outlet
+        np.isclose(y,  0.0,     atol=tol) |   # bottom wall
+        np.isclose(y,  cfg.H_max, atol=tol)   # top wall
+    )
+    channel_boundary_pts = boundary_pts[channel_mask]
+    # Note: this means we won't have exactly cfg.n_boundary points,
+    # but this value can simple be increased liberally if needed
 
+    return interior_pts, channel_boundary_pts
+
+
+# --- Geometry-Specific Obstacle Points ---
 def find_largest_ellipse(geometries: list[tuple[float, float]]) -> tuple[float, float]:
     """
     Identify the largest training ellipse by enclosed area (pi*a*b).
@@ -397,31 +439,27 @@ def build_output_array_from_cache(
     return output_arr, extended_trunk
 
 
-def build_pde_data_object(geometries: list[tuple],
-                          cfg: StenosisConfig):
+def build_pde_data_object(cfg: StenosisConfig, 
+                          interior_pts, boundary_pts,
+                          geometries: list[tuple] = None):
     """Construct the data.PDE object, which handles DeepONet trunk points"""
     
     # Build trunk geometry (intersection-masked)
-    channel     = dde.geometry.Rectangle([-cfg.L/2, 0], [cfg.L/2, cfg.H_max])
-    largest_a, largest_b = find_largest_ellipse(geometries)
-    obstruction = dde.geometry.Ellipse([cfg.x_c, cfg.y_c], largest_a, largest_b)
-    trunk_geom  = dde.geometry.CSGDifference(channel, obstruction)
+    trunk_geom = build_intersection_geometry(cfg, geometries)
+    all_trunk_pts = np.concatenate([interior_pts, boundary_pts], axis=0)
+    
+    bcs = build_channel_bcs(boundary_pts, cfg)
 
     pde_data = dde.data.PDE(
         geometry=trunk_geom,
         pde=pde_loss_operator(cfg),       # 3-argument form: (x, outputs, X_func)
-        bcs=[],
-        num_domain=cfg.n_interior,
-        num_boundary=cfg.n_boundary,
-        num_test=cfg.n_test,
+        bcs=bcs,
+        num_domain=0,   # use manual anchors
+        num_boundary=0,
+        anchors=all_trunk_pts,
     )
     
-    # inject PointSetBCs after construction since we need PDE's points
-    trunk_pts = pde_data.train_x_all
-    bcs = build_channel_bcs(trunk_pts, cfg)
-    pde_data.bcs = bcs
-    
-    return pde_data
+    return pde_data, all_trunk_pts
 
 
 # ─────────────────────────────────────────────────────────────
@@ -520,8 +558,6 @@ def build_deeponet_model(
         num_outputs=3,                    # u, v, p — each gets its own inner product + bias
         multi_output_strategy="split_branch",
     )
-    
-    print(data.train_x[1])
     
     return dde.Model(data, net)
 

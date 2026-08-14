@@ -176,9 +176,22 @@ def load_or_cache_trunk(cfg: StenosisConfig, fem_data_dict: dict,
         msh_dict             : {(a,b): dolfinx mesh object}
     """
     
+    # Shared trunk points
+    interior_path = cfg.data_dir / f"deeponet_trunk_interior_{tag}.csv"
+    boundary_path = cfg.data_dir / f"deeponet_trunk_shared_boundary_{tag}.csv"
+    if force or (not interior_path.exists() or boundary_path.exists()):
+        print(f"Sampling interior and shared boundary trunk points.")
+        interior_pts, boundary_pts = sample_shared_trunk_points(cfg)
+        np.savetxt(interior_path, interior_pts, delimiter=",")
+        np.savetxt(boundary_path, boundary_pts, delimiter=",")
+    else:
+        print(f"Loading interior and shared boundary trunk points from {interior_path.name} and {boundary_path.name}")
+        interior_pts = np.loadtxt(interior_path, delimiter=",").astype(np.float32)
+        boundary_pts = np.loadtxt(boundary_path, delimiter=",").astype(np.float32)
+        
+    
     # PDE data object
-    pde_data = build_pde_data_object(cfg.train_geometries, cfg)
-    trunk_pts = pde_data.train_x_all
+    pde_data, trunk_pts = build_pde_data_object(cfg, interior_pts, boundary_pts, cfg.train_geometries)
     
     # Per-geometry obstacle points (need for output array)
     print(f"Sampling obstacle points for {len(cfg.train_geometries)} geometries")
@@ -249,7 +262,7 @@ def load_or_train_deeponet(cfg: StenosisConfig,
     # train / restore
     if force_deeponet or rerun:
         print(f"Training DeepONet, solution to be saved to: {model_prefix.name}")
-        cfg.clear_dir(cfg.pinn_dir)     # clear any old models
+        cfg.clear_dir(cfg.deeponet_dir)     # clear any old models
         trained_model = train_deeponet(model, model_prefix, cfg)
     else:
         print(f"Skipping PINN since existing model(s) found: {existing_models}")
