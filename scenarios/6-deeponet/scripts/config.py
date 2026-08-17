@@ -63,6 +63,17 @@ class StenosisConfig:
     n_obstacle: int = 100       # default 200, can tune.
     n_test: int = 800
     
+    n_functions: int = 10        # geometries sampled per training step
+    n_functions_test: int = 5    # geometries used for test PDE loss
+
+    loss_weights_deeponet: List[float] = field(
+        default_factory=lambda: [10, 10, 10,   # PDE cont, xm, ym
+                                100,          # obstacle no-slip
+                                5, 5,         # BC inlet u, v
+                                25, 25,       # BC wall u, v
+                                5]            # BC outlet p
+    )
+    
     branch_net_hidden_layers: List[int] = field(
         default_factory=lambda: [256, 256, 128]     # neurons between input and latent dimension
         # Larger first layer because N_sensors (800) is the raw input
@@ -78,7 +89,7 @@ class StenosisConfig:
     )
     
     # train adam
-    n_adam: int = 25000         # train for N iterations with Adam
+    n_adam: int = 50000         # train for N iterations with Adam
     lr: float = 1e-3            # Adam learning rate
     
     # train l-bfgs

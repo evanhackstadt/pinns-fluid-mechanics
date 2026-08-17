@@ -41,14 +41,10 @@ def parse_args():
                         help="Force fresh mesh generation instead of depending on cached file.")
     parser.add_argument("--skip-fem", action="store_true",
                         help="Skip the live FEM solve and instead load from cached file.")
-    parser.add_argument("--force-resample-train", action="store_true",
-                        help="Force resampling of labeled data for training from FEM ground-truth. Will require a fresh PINN training as well.")
-    parser.add_argument("--force-resample-test", action="store_true",
-                            help="Force resampling of labeled data for fine-tuning from FEM ground-truth. Will require a fresh PINN fine-tuning as well.")
+    parser.add_argument("--force-resample", action="store_true",
+                        help="Force resampling of all branch, trunk, and labeled data. Will require a fresh DeepONet training as well.")
     parser.add_argument("--force-deeponet", action="store_true",
                         help="Force fresh DeepONet training instead of depending on saved models.")
-    parser.add_argument("--analysis-only", action="store_true",
-                        help="Perform analysis and visualization ONLY, avoiding costly PINN retraining. Incompatible with force options.")
     
     return parser.parse_args()
 
@@ -160,82 +156,11 @@ def load_or_cache_sensors(cfg: StenosisConfig, force: bool = False):
         return sensors
 
 
-# --- 4. Trunk Inputs ---
-def load_or_cache_trunk(cfg: StenosisConfig, fem_data_dict: dict,
-                        u_sol_dict: dict, p_sol_dict: dict,
-                        msh_dict: dict, tag: str, force: bool = False):
-    """
-    Create and return PDE data, trunk points, labeled output array, and extended trunk (with obstacle pts appended)
-    
-    Parameters
-    ----------
-        cfg                  : StenosisConfig
-        fem_data_dict        : {(a,b): (N_fem_pts, 5)} — cached FEM data (for reference)
-        u_sol_dict           : {(a,b): dolfinx velocity solution object}
-        p_sol_dict           : {(a,b): dolfinx pressure solution object}
-        msh_dict             : {(a,b): dolfinx mesh object}
-    """
-    
-    # Shared trunk points
-    interior_path = cfg.data_dir / f"deeponet_trunk_interior_{tag}.csv"
-    boundary_path = cfg.data_dir / f"deeponet_trunk_shared_boundary_{tag}.csv"
-    if force or (not interior_path.exists() or boundary_path.exists()):
-        print(f"Sampling interior and shared boundary trunk points.")
-        interior_pts, boundary_pts = sample_shared_trunk_points(cfg)
-        np.savetxt(interior_path, interior_pts, delimiter=",")
-        np.savetxt(boundary_path, boundary_pts, delimiter=",")
-    else:
-        print(f"Loading interior and shared boundary trunk points from {interior_path.name} and {boundary_path.name}")
-        interior_pts = np.loadtxt(interior_path, delimiter=",").astype(np.float32)
-        boundary_pts = np.loadtxt(boundary_path, delimiter=",").astype(np.float32)
-        
-    
-    # PDE data object
-    pde_data, trunk_pts = build_pde_data_object(cfg, interior_pts, boundary_pts, cfg.train_geometries)
-    
-    # Per-geometry obstacle points (need for output array)
-    print(f"Sampling obstacle points for {len(cfg.train_geometries)} geometries")
-    obstacle_pts_by_geom = sample_obstacle_points(cfg, cfg.train_geometries)
-    
-    # labeled output array
-    # extended trunk (query pts + channel boundary pts + obstacle pts from the first geo)
-    arr_path = cfg.data_dir / f"deeponet_trunk_labeled_{tag}.npy"
-    ext_trunk_path = cfg.data_dir / f"deeponet_trunk_extended_{tag}.csv"
-    use_cache = (None in u_sol_dict.values()) or (None in p_sol_dict.values())
-    
-    if not force and arr_path.exists() and ext_trunk_path.exists():
-        print(f"Loading labeled array from {arr_path.name} and extended trunk from {ext_trunk_path.name}")
-        output_arr = np.load(arr_path, allow_pickle=True).astype(np.float32)
-        extended_trunk = np.loadtxt(ext_trunk_path, delimiter=",").astype(np.float32)
-    else:
-        if use_cache:
-            print(f"Sampling labeled trunk points for {len(cfg.train_geometries)} geometries -> {arr_path.name} *using cached FEM*")
-            output_arr, extended_trunk = build_output_array_from_cache(fem_data_dict, 
-                                                            trunk_pts, 
-                                                            obstacle_pts_by_geom, 
-                                                            cfg)
-        else:
-            print(f"Sampling labeled trunk points for {len(cfg.train_geometries)} geometries -> {arr_path.name}")
-            output_arr, extended_trunk = build_output_array(fem_data_dict, 
-                                                trunk_pts,
-                                                obstacle_pts_by_geom, 
-                                                u_sol_dict,
-                                                p_sol_dict,
-                                                msh_dict,
-                                                cfg)
-        np.save(arr_path, output_arr)
-        np.savetxt(ext_trunk_path, extended_trunk, delimiter=",")
-    
-    return pde_data, trunk_pts, output_arr, extended_trunk
-
-
 
 # --- 5. Train DeepONet ---
 def load_or_train_deeponet(cfg: StenosisConfig,
-                           pde_data: dde.data.PDE,
                            sensors: np.ndarray,
-                           extended_trunk: np.ndarray,
-                           output_arr: np.ndarray,
+                           function_space: StenosisGeometrySpace,
                            force_deeponet: bool):
     """
     Performs main DeepONet training on all training geometries
@@ -243,16 +168,14 @@ def load_or_train_deeponet(cfg: StenosisConfig,
         cfg: custom config object
         pde_data: DeepXDE PDE data object handling trunk points (geometry, PDE loss, channel BCs)
         sensors: array of fixed sensor points (n_sensors, 2) = [x,y]
-        extended_trunk: array of trunk inputs ()
-        output_arr: FEM- and BC-labeled data array of (n_geom, M + K, 3)
+        function_space: the StenosisGeometrySpace object used for building the model
         force_deeponet: whether or not to force retraining from scratch regardless of saved models
     Returns:
         trained_model: DeepXDE model object with trained weights / parameters
     """
     model_prefix = cfg.deeponet_dir / "model"
     
-    model = build_deeponet_model(cfg.train_geometries, pde_data, sensors,
-                                 extended_trunk, output_arr, cfg)
+    model = build_deeponet_model(cfg, sensors, function_space)
     
     # proxy for train completion: saved model and training log
     existing_models = glob.glob(f"{model_prefix}*.pt")
@@ -273,13 +196,14 @@ def load_or_train_deeponet(cfg: StenosisConfig,
 
 
 # --- 7. DeepONet Predict on Training Set ---
-def predict_and_save_errors(fem_data_dict, model, sensors, label, cfg: StenosisConfig):
+def predict_and_save_errors(fem_data_dict, model, sensors, function_space, label, cfg: StenosisConfig):
     """
     Evaluate the model on each provided geometry, compare to ground truth, and save errors.
     Args:
         fem_data_dict: dictionary mapping (a, b) --> array of shape (N, 5) = [x,y,u,v,p] 
         model: a DeepXDE model object to use for prediction (can be baseline, finetuned, etc.)
         sensors: array of fixed sensor points (n_sensors, 2) = [x, y]
+        function_space: the StenosisGeometrySpace object used for building the model
         label: either "train" or "test" to distinguish error file
         cfg: custom config object
     Returns:
@@ -296,7 +220,7 @@ def predict_and_save_errors(fem_data_dict, model, sensors, label, cfg: StenosisC
         
         # predict
         query_pts = fem_data[:, 0:2]
-        deeponet_data = deeponet_predict(model, sensors, cfg, a, b, query_pts)
+        deeponet_data = deeponet_predict(model, sensors, cfg, a, b, query_pts, function_space)
         errors = compute_errors(deeponet_data, fem_data)
         
         # log
@@ -496,10 +420,8 @@ def main():
         cfg.mesh_size = args.mesh_size
     
     # downstream dependencies
-    if args.force_resample_train:
+    if args.force_resample:
         args.force_deeponet = True
-    if args.force_resample_test or args.force_deeponet:
-        args.force_finetune = True
     
     # Validate geometry split
     for tup in cfg.train_geometries:
@@ -510,96 +432,79 @@ def main():
     print(f"\n{'='*50}\nEXECUTION PLAN\n{'='*50}")
     print(f"\nTrain geometries={cfg.train_geometries}")
     print(f"\nTest geometries{cfg.test_geometries}")
-    if args.analysis_only:
-        print(f"\n1. Analysis ONLY. Skipping mesh, FEM, and PINN. Analyzing complete cases only.")
-    else:
-        print(f"\n1. Generate meshes for each geometry (forced = {args.force_mesh})")
-        print(f"2. Solve FEM ground truth for each geometry (forced = {args.skip_fem})")
-        print(f"3. Assemble branch data (SDF at sensor points, train and test geometries)")
-        print(f"4. Assemble trunk data (extended trunk data, train geometries)")
-        print(f"5. Construct PointSetBCs for the channel boundary conditions")
-        print(f"6. Build and Train DeepONet on {len(cfg.train_geometries)} training geometries (forced = {args.force_deeponet})")
-        print(f"6. Validate DeepONet on training geometries")
-        print(f"8. Test DeepONet on testing geometries")
-        print(f"9. Perform analysis and visualization")
+    print(f"\n1. Generate meshes for each geometry (forced = {args.force_mesh})")
+    print(f"2. Solve FEM ground truth for each geometry (forced = {args.skip_fem})")
+    print(f"3. Assemble branch data (SDF at sensor points, train and test geometries) (forced = {args.force_resample})")
+    print(f"4. Assemble trunk data (extended trunk data, train geometries) (forced = {args.force_resample})")
+    print(f"5. Build and Train DeepONet on {len(cfg.train_geometries)} training geometries (forced = {args.force_deeponet})")
+    print(f"6. Validate DeepONet on training geometries")
+    print(f"8. Test DeepONet on testing geometries")
+    print(f"9. Perform analysis and visualization")
     
+    # Stage 0: make dirs
+    cfg.make_all_dirs()
     
-    # Perform only analysis on complete cases if requested
-    if args.analysis_only:
-        pass                    # TODO
+    # Stages 1-2: Generate meshes and ground-truth FEM for train + test geometries
+    fem_data_dict_train = {}
+    fem_data_dict_test  = {}
+    fem_sol_objects_train = {'u': {}, 'p': {}, 'msh': {}}
+    fem_sol_objects_test  = {'u': {}, 'p': {}, 'msh': {}}
     
-    else:
-    
-        cfg.make_all_dirs()
+    for (a, b) in cfg.train_geometries:
+        msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
+        fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
         
-        # Stages 1-2: Generate meshes and ground-truth FEM for train + test geometries
-        fem_data_dict_train = {}
-        fem_data_dict_test  = {}
-        fem_sol_objects_train = {'u': {}, 'p': {}, 'msh': {}}
-        fem_sol_objects_test  = {'u': {}, 'p': {}, 'msh': {}}
+        fem_data_dict_train[(a, b)] = fem_data
+        fem_sol_objects_train['u'][(a, b)] = u_sol
+        fem_sol_objects_train['p'][(a, b)] = p_sol
+        fem_sol_objects_train['msh'][(a, b)] = msh
+    
+    for (a, b) in cfg.test_geometries:
+        msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
+        fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
         
-        for (a, b) in cfg.train_geometries:
-            msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
-            fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
-            
-            fem_data_dict_train[(a, b)] = fem_data
-            fem_sol_objects_train['u'][(a, b)] = u_sol
-            fem_sol_objects_train['p'][(a, b)] = p_sol
-            fem_sol_objects_train['msh'][(a, b)] = msh
-        
-        for (a, b) in cfg.test_geometries:
-            msh_file = load_or_cache_mesh(cfg, a, b, args.force_mesh)
-            fem_data, msh, u_sol, p_sol = load_or_cache_fem(cfg, a, b, msh_file, args.skip_fem)
-            
-            fem_data_dict_test[(a, b)] = fem_data
-            fem_sol_objects_test['u'][(a, b)] = u_sol
-            fem_sol_objects_test['p'][(a, b)] = p_sol
-            fem_sol_objects_test['msh'][(a, b)] = msh
+        fem_data_dict_test[(a, b)] = fem_data
+        fem_sol_objects_test['u'][(a, b)] = u_sol
+        fem_sol_objects_test['p'][(a, b)] = p_sol
+        fem_sol_objects_test['msh'][(a, b)] = msh
 
-        
-        # Stage 3: Branch Inputs (build sensor grid and evaluate SDF for each geo)
-        sensors = load_or_cache_sensors(cfg)
-        
-        # Stage 4: Trunk Inputs (obstacle points, PDE data, output array)
-        
-        
-        # Stage 4: Trunk Inputs: intersection mask
-        pde_data, trunk_train, output_arr_train, ext_trunk_train = load_or_cache_trunk(
-            cfg, fem_data_dict_train,
-            fem_sol_objects_train['u'],
-            fem_sol_objects_train['p'],
-            fem_sol_objects_train['msh'],
-            "train",
-        )
-        
-        
-        # Stage 5: Build and Train DeepONet
-        trained_model = load_or_train_deeponet(cfg, pde_data, sensors, ext_trunk_train, 
-                                               output_arr_train, args.force_deeponet)
-        
-        
-        # Stage 6: Evaluate on Training Geometries
-        deeponet_data_dict_train, summary_train = predict_and_save_errors(fem_data_dict_train, 
-                                                                          trained_model, 
-                                                                          sensors, 
-                                                                          "train", 
-                                                                          cfg)
-        # Stage 8: Evaluate on Testing Geometries
-        deeponet_data_dict_test, summary_test = predict_and_save_errors(fem_data_dict_test, 
+    
+    # Stage 3
+    function_space = StenosisGeometrySpace(cfg, cfg.train_geometries)
+    function_space_test = StenosisGeometrySpace(cfg, cfg.test_geometries)
+    
+    # Stage 3: Branch Inputs (build sensor grid and evaluate SDF for each geo)
+    sensors = load_or_cache_sensors(cfg)
+    
+    
+    # Stage 5: Build and Train DeepONet
+    trained_model = load_or_train_deeponet(cfg, sensors, function_space, args.force_deeponet)
+    
+    
+    # Stage 6: Evaluate on Training Geometries
+    deeponet_data_dict_train, summary_train = predict_and_save_errors(fem_data_dict_train, 
                                                                         trained_model, 
                                                                         sensors, 
-                                                                        "test", 
+                                                                        function_space,
+                                                                        "train", 
                                                                         cfg)
-        
-        
-        # Stage 9: Analysis and Visualization
-        visualization(deeponet_data_dict_train, deeponet_data_dict_test,
-                      fem_data_dict_train, fem_data_dict_test,
-                      summary_train, summary_test, cfg)
-        
-        # Stage 10: Analysis and Visualization - alongside Scneario 5 PINN
-        
-        print(f"\n{'='*50}\nPIPELINE COMPLETE\n{'='*50}")
+    # Stage 8: Evaluate on Testing Geometries
+    deeponet_data_dict_test, summary_test = predict_and_save_errors(fem_data_dict_test, 
+                                                                    trained_model, 
+                                                                    sensors, 
+                                                                    function_space_test,
+                                                                    "test", 
+                                                                    cfg)
+    
+    
+    # Stage 9: Analysis and Visualization
+    visualization(deeponet_data_dict_train, deeponet_data_dict_test,
+                    fem_data_dict_train, fem_data_dict_test,
+                    summary_train, summary_test, cfg)
+    
+    # Stage 10: Analysis and Visualization - alongside Scneario 5 PINN
+    
+    print(f"\n{'='*50}\nPIPELINE COMPLETE\n{'='*50}")
     
 
 
