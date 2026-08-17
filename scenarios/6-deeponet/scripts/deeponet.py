@@ -354,18 +354,61 @@ def make_auxiliary_var_fn(cfg: StenosisConfig,
 
 
 # ─────────────────────────────────────────────────────────────
-# SECTION 6: MODEL CONSTRUCTION
+# SECTION 6: LABELED DATA
+# ─────────────────────────────────────────────────────────────
+
+def build_labeled_output(fem_data_dict: dict,
+                         trunk_pts: np.ndarray,
+                         cfg: StenosisConfig,
+                         ) -> np.ndarray:
+    """
+    Evaluate FEM solution at shared trunk points for each training geometry.
+    Uses nearest-neighbour lookup from the cached FEM dense grid.
+
+    Parameters
+    ----------
+    fem_data_dict : {(a,b): (N_fem, 5)} with columns [x, y, u, v, p]
+    trunk_pts     : (M, 2) trunk spatial coordinates from pde_data.train_x_all
+    cfg           : StenosisConfig
+
+    Returns
+    -------
+    output_arr : (N_geom, M, 3) float32 — aligned [u, v, p] for each geometry
+    """
+    from scipy.spatial import cKDTree
+
+    geom_list   = list(fem_data_dict.keys())
+    N_geom      = len(geom_list)
+    M           = trunk_pts.shape[0]
+    output_arr  = np.zeros((N_geom, M, 3), dtype=np.float32)
+
+    for i, (a, b) in enumerate(geom_list):
+        fem_data = fem_data_dict[(a, b)]
+        fem_xy   = fem_data[:, 0:2]
+        fem_uvp  = fem_data[:, 2:5]
+
+        tree = cKDTree(fem_xy)
+        _, idx = tree.query(trunk_pts)           # (M,) indices into fem_data
+        output_arr[i] = fem_uvp[idx].astype(np.float32)
+
+    return output_arr
+
+
+# ─────────────────────────────────────────────────────────────
+# SECTION 7: MODEL CONSTRUCTION
 # ─────────────────────────────────────────────────────────────
 
 def build_deeponet_model(
     cfg: StenosisConfig,
     sensors: np.ndarray,
     function_space: StenosisGeometrySpace,
+    fem_data_dict: dict,
     p: int = 128,
     obstacle_sigma: float = 0.05,
     fluid_offset: float = -0.02,
     fluid_sharpness: float = 0.01,
     lambda_obs: float = 50.0,
+    log_data: bool = False,
 ) -> dde.Model:
     """
     Build the PI-DeepONet model using PDEOperator (non-Cartesian).
@@ -375,6 +418,7 @@ def build_deeponet_model(
     cfg            : StenosisConfig
     sensors        : (N_sensors, 2) fixed sensor grid
     function_space : StenosisGeometrySpace instance (shared with aux_fn)
+    fem_data_dict  : dict mapping (a,b) -> fem_data array of shape (N, 5) = [x,y,u,v,p]
     p              : inner product latent dimension
     obstacle_sigma : Gaussian σ for obstacle BC soft weight
     fluid_offset   : sigmoid offset for fluid mask (negative = buffer inside solid)
@@ -418,7 +462,7 @@ def build_deeponet_model(
         bcs=channel_bcs,
         num_domain=cfg.n_interior,
         num_boundary=cfg.n_boundary,
-        num_test=cfg.n_test,
+        num_test=None,
         auxiliary_var_function=aux_fn,
     )
 
@@ -430,6 +474,20 @@ def build_deeponet_model(
         num_function=cfg.n_functions,    # functions sampled per training step
         num_test=cfg.n_functions_test,
     )
+    
+    # Inject labeled FEM data if provided
+    if fem_data_dict is not None:
+        trunk_pts  = pde_data.train_x_all          # (M, 2)
+        output_arr = build_labeled_output(fem_data_dict, trunk_pts, cfg)
+        # PDEOperator expects train_y shape (N_geom, M, n_outputs)
+        data.train_y = output_arr
+    
+    # Log if requested
+    if log_data:
+        train_x_path = cfg.data_dir / "train_x.npy"
+        train_y_path = cfg.data_dir / "train_y.npy"
+        np.save(train_x_path, trunk_pts)
+        np.save(train_y_path, output_arr)
 
     # --- Network ---
     # Branch: N_sensors -> hidden -> p*3 (split_branch strategy)
@@ -451,7 +509,7 @@ def build_deeponet_model(
 
 
 # ─────────────────────────────────────────────────────────────
-# SECTION 7: TRAINING
+# SECTION 8: TRAINING
 # ─────────────────────────────────────────────────────────────
 
 class LossMagnitudeReweighter(dde.callbacks.Callback):
@@ -557,7 +615,7 @@ def train_deeponet(
 
 
 # ─────────────────────────────────────────────────────────────
-# SECTION 8: INFERENCE
+# SECTION 9: INFERENCE
 # ─────────────────────────────────────────────────────────────
 
 def deeponet_predict(

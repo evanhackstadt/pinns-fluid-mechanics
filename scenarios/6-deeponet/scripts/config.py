@@ -70,10 +70,11 @@ class StenosisConfig:
     n_interior: int = 2000     # default 2000, can tune. Fed to PDE loss.
     n_boundary: int = 800      # default 800, can tune. Fed to BC loss.
     n_obstacle: int = 200      # default 200, can tune.
-    n_test: int = None
+    n_labeled_train: int = 10   # default 10, can tune.
+    uniform_frac: float = 0.3
     
-    n_functions: int = 3        # geometries sampled per training step
-    n_functions_test: int = 3    # geometries used for test PDE loss
+    n_functions: int = 10        # geometries sampled per training step
+    n_functions_test: int = 5    # geometries used for test PDE loss
 
     loss_weights_deeponet: List[float] = field(
         default_factory=lambda: [10, 10, 10,   # PDE cont, xm, ym
@@ -160,7 +161,7 @@ class StenosisConfig:
     
     
     def geo_tag(self, a, b):
-        return f"a{a:.2f}_b{b:.2f}"
+        return f"a{a:.3g}_b{b:.3g}"
     
     def infer_geo(self, geo_tag: str):
         a_str, b_str = geo_tag.split("_")

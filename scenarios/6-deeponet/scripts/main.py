@@ -52,6 +52,7 @@ def parse_args():
 # perform lazy execution of functions from other scripts & save results
 
 
+# --- 1. Sample Geometries ---
 def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
     """
     Samples or loads a variety of ellipse geometries, train/test splits, and writes & returns config object
@@ -115,7 +116,7 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
         
     
 
-# --- 1. Generate Mesh ---
+# --- 2. Generate Meshes ---
 def load_or_cache_mesh(cfg: StenosisConfig, a: float, b: float, force_mesh: bool):
     """
     Generates mesh for a given geometry, unless file already exists.
@@ -141,7 +142,7 @@ def load_or_cache_mesh(cfg: StenosisConfig, a: float, b: float, force_mesh: bool
     return msh_file
 
 
-# --- 2. FEM Solve ---
+# --- 3. FEM Solve ---
 def load_or_cache_fem(cfg: StenosisConfig, a: float, b: float, 
                       msh_file: Path, skip_fem: bool):
     """
@@ -198,7 +199,7 @@ def load_or_cache_fem(cfg: StenosisConfig, a: float, b: float,
     
 
 
-# --- 3. Branch Inputs ---
+# --- 4. Branch Inputs ---
 def load_or_cache_sensors(cfg: StenosisConfig, force: bool = False):
     """
     Load sensor grid from disk or compute and save it.
@@ -218,11 +219,11 @@ def load_or_cache_sensors(cfg: StenosisConfig, force: bool = False):
         return sensors
 
 
-
 # --- 5. Train DeepONet ---
 def load_or_train_deeponet(cfg: StenosisConfig,
                            sensors: np.ndarray,
                            function_space: StenosisGeometrySpace,
+                           fem_data_dict_train: dict,
                            force_deeponet: bool):
     """
     Performs main DeepONet training on all training geometries
@@ -237,7 +238,11 @@ def load_or_train_deeponet(cfg: StenosisConfig,
     """
     model_prefix = cfg.deeponet_dir / "model"
     
-    model = build_deeponet_model(cfg, sensors, function_space)
+    assert list(fem_data_dict_train.keys()) == cfg.train_geometries, \
+        "fem_data_dict key order must match cfg.train_geometries"
+    
+    model = build_deeponet_model(cfg, sensors, function_space, 
+                                 fem_data_dict_train, log_data=True)
     
     # proxy for train completion: saved model and training log
     existing_models = glob.glob(f"{model_prefix}*.pt")
@@ -505,12 +510,13 @@ def main():
 
     cfg.make_all_dirs()
 
+    # Stage 1: Generate ellipse geometries
     cfg = load_or_cache_ellipses(cfg, args.force_resample)
 
     print(f"\nTrain geometries={cfg.train_geometries}")
     print(f"\nTest geometries{cfg.test_geometries}")
     
-    # Stages 1-2: Generate meshes and ground-truth FEM for train + test geometries
+    # Stages 2-3: Generate meshes and ground-truth FEM for train + test geometries
     fem_data_dict_train = {}
     fem_data_dict_test  = {}
     fem_sol_objects_train = {'u': {}, 'p': {}, 'msh': {}}
@@ -535,26 +541,25 @@ def main():
         fem_sol_objects_test['msh'][(a, b)] = msh
 
     
-    # Stage 3
+    # Stage 4: Branch Inputs (establish geometry spaces and sensors)
     function_space = StenosisGeometrySpace(cfg, cfg.train_geometries)
     function_space_test = StenosisGeometrySpace(cfg, cfg.test_geometries)
-    
-    # Stage 3: Branch Inputs (build sensor grid and evaluate SDF for each geo)
     sensors = load_or_cache_sensors(cfg)
     
     
     # Stage 5: Build and Train DeepONet
-    trained_model = load_or_train_deeponet(cfg, sensors, function_space, args.force_deeponet)
+    trained_model = load_or_train_deeponet(cfg, sensors, function_space, 
+                                           fem_data_dict_train, args.force_deeponet)
     
     
     # Stage 6: Evaluate on Training Geometries
     deeponet_data_dict_train, summary_train = predict_and_save_errors(fem_data_dict_train, 
-                                                                        trained_model, 
-                                                                        sensors, 
-                                                                        function_space,
-                                                                        "train", 
-                                                                        cfg)
-    # Stage 8: Evaluate on Testing Geometries
+                                                                      trained_model,
+                                                                      sensors, 
+                                                                      function_space,
+                                                                      "train", 
+                                                                      cfg)
+    # Stage 7: Evaluate on Testing Geometries
     deeponet_data_dict_test, summary_test = predict_and_save_errors(fem_data_dict_test, 
                                                                     trained_model, 
                                                                     sensors, 
@@ -563,12 +568,13 @@ def main():
                                                                     cfg)
     
     
-    # Stage 9: Analysis and Visualization
+    # Stage 8: Analysis and Visualization
     visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                     fem_data_dict_train, fem_data_dict_test,
                     summary_train, summary_test, cfg)
     
-    # Stage 10: Analysis and Visualization - alongside Scneario 5 PINN
+    # Stage 9: Analysis and Visualization - alongside Scneario 5 PINN
+    # TODO
     
     print(f"\n{'='*50}\nPIPELINE COMPLETE\n{'='*50}")
     
