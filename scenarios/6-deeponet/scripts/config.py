@@ -24,8 +24,17 @@ class StenosisConfig:
     y_c: float = 1.0        # ellipse center y
     
     # --- Geometry Variables ---
-    # List of (a, b) = ellipse semimajor, semiminor; where a>b
     
+    # these values will trigger sampling to override specified train/test_geometries
+    n_a_values: int = 10    # we will use upper triangle of axb combination matrix
+    geometry_min_a: float = 0.1
+    geometry_max_a: float = 0.7
+    n_b_values: int = 10
+    geometry_min_b: float = 0.1
+    geometry_max_b: float = 0.7
+    test_proportion: float = 0.3
+    
+    # Manual list of (a, b) = ellipse semimajor, semiminor; where a>b
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
             (0.3, 0.25),

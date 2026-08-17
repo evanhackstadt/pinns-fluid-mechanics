@@ -53,6 +53,58 @@ def parse_args():
 # ———————————————— SUB-FUNCTIONS ————————————————
 # perform lazy execution of functions from other scripts & save results
 
+
+def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
+    """
+    Samples or loads a variety of ellipse geometries, train/test splits, and writes & returns config object
+    Args:
+        cfg: custom config object
+        force_resample: whether or not to force resampmling of geometries.
+    Returns:
+        cfg: new config object holding the sampled train and test geometries
+    """
+    if cfg.n_train_geometries is None or cfg.n_test_geometries is None:
+        return cfg
+    
+    else:
+        
+        train_file = cfg.data_dir / f"geometries_train.json"
+        test_file  = cfg.data_dir / f"geometries_test.json"
+        
+        if not force_resample and train_file.exists() and test_file.exists():
+            with open(train_file, "rb") as fp:
+                train_geos = json.load(fp)
+            with open(test_file, "rb") as fp:
+                test_geos = json.load(fp)
+        
+        else:
+            a_vals = np.linspace(cfg.geometry_min_a, cfg.geometry_max_a, cfg.n_a_values)
+            b_vals = np.linspace(cfg.geometry_min_b, cfg.geometry_max_b, cfg.n_b_values)
+            
+            all_geos = []
+            for a in a_vals:
+                for b in b_vals:
+                    if a >= b:
+                        all_geos.append((a, b))
+            
+            split_idx = len(all_geos) * cfg.test_proportion
+            test_geos  = all_geos[:split_idx]
+            train_geos = all_geos[split_idx:]
+            
+            with open(train_file, "wb") as fp:
+                json.dump(train_geos, fp)
+            with open(test_file, "wb") as fp:
+                json.dump(test_geos, fp)
+        
+        # Update config object
+        cfg.train_geometries = train_geos
+        cfg.test_geometries = test_geos
+        print(f"Updated config with {len(train_geos)} training geometries and {len(test_geos)} testing geometries")
+        
+        return cfg
+        
+    
+
 # --- 1. Generate Mesh ---
 def load_or_cache_mesh(cfg: StenosisConfig, a: float, b: float, force_mesh: bool):
     """
