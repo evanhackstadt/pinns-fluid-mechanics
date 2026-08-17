@@ -62,7 +62,12 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
     Returns:
         cfg: new config object holding the sampled train and test geometries
     """
-        
+    
+    # Override
+    if cfg.train_geometries is not None and cfg.test_geometries is not None:
+        print("Using manually specified geometries from config file.")
+        return cfg
+
     train_file = cfg.data_dir / f"geometries_train.json"
     test_file  = cfg.data_dir / f"geometries_test.json"
     
@@ -74,31 +79,32 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
             test_geos = json.load(fp)
     
     else:
-        print(f"Sampling ellipse geometries")
-        a_vals = np.linspace(cfg.geometry_min_a, cfg.geometry_max_a, cfg.n_a_values)
-        b_vals = np.linspace(cfg.geometry_min_b, cfg.geometry_max_b, cfg.n_b_values)
         
-        all_geos = []
-        for a in a_vals:
-            for b in b_vals:
-                if a >= b:
-                    all_geos.append((float(a), float(b)))
+        override = hasattr(cfg, 'train_geometries') and hasattr(cfg, 'test_geometries') \
+                   and cfg.train_geometries is not None and cfg.test_geometries is not None
         
-        print(all_geos)
+        if override:
+            train_geos = cfg.train_geometries
+            test_geos = cfg.test_geometries
+        else:
+            print(f"Sampling ellipse geometries")
+            a_vals = np.linspace(cfg.geometry_min_a, cfg.geometry_max_a, cfg.n_a_values)
+            b_vals = np.linspace(cfg.geometry_min_b, cfg.geometry_max_b, cfg.n_b_values)
+            
+            all_geos = []
+            for a in a_vals:
+                for b in b_vals:
+                    if a >= b:
+                        all_geos.append((float(a), float(b)))
 
-        N = len(all_geos)
-        n_test = int(N * cfg.test_proportion)
-        rng = np.random.default_rng(seed=cfg.seed)
-        idx_test = rng.choice(N, size=n_test, replace=False)
-        idx_train = np.setdiff1d(np.arange(N), idx_test)    # remaining indices
+            N = len(all_geos)
+            n_test = int(N * cfg.test_proportion)
+            rng = np.random.default_rng(seed=cfg.seed)
+            idx_test = rng.choice(N, size=n_test, replace=False)
+            idx_train = np.setdiff1d(np.arange(N), idx_test)    # remaining indices
 
-        print(idx_test)
-        print(idx_train)
-        test_geos = [all_geos[i] for i in idx_test]
-        train_geos = [all_geos[i] for i in idx_train]
-
-        print(test_geos)
-        print(train_geos)
+            test_geos = [all_geos[i] for i in idx_test]
+            train_geos = [all_geos[i] for i in idx_train]
         
         with open(train_file, "w") as fp:
             data = json.dumps(train_geos)
