@@ -239,8 +239,7 @@ def make_pde_loss(cfg: StenosisConfig,
         x       : (M, n_x_cols) trunk points; col 0 = x_coord, col 1 = y_coord,
                   col 2 = SDF value (appended by auxiliary_var_function)
         outputs : (M, 3) model predictions (u, v, p)
-        inputs  : (N_sensors,) SDF values for the current geometry — NOT used here
-                  (the SDF at trunk points is already in x[:, 2])
+        aux_sdf  : (N_sensors,) SDF values for the current geometry
 
     The SDF column in x is populated once per function evaluation by
     `auxiliary_var_function` (see `make_auxiliary_var_fn`).
@@ -259,7 +258,7 @@ def make_pde_loss(cfg: StenosisConfig,
     """
     RE = cfg.Re
 
-    def pde(x, outputs, inputs):
+    def pde(x, outputs, aux_sdf):
         u_pred = outputs[:, 0:1]
         v_pred = outputs[:, 1:2]
         p_pred = outputs[:, 2:3]
@@ -283,15 +282,11 @@ def make_pde_loss(cfg: StenosisConfig,
         y_momentum = (u_pred * dv_x + v_pred * dv_y
                       + dp_y - (1.0 / RE) * (dv_xx + dv_yy))
 
-        # --- SDF column appended by auxiliary_var_function ---
-        # x has shape (M, 3): [x_coord, y_coord, sdf]
-        sdf = x[:, 2:3]   # (M, 1)
-
         # Fluid mask — smoothly suppresses residual inside the solid
-        w_pde = torch.sigmoid((sdf - fluid_offset) / fluid_sharpness)
+        w_pde = torch.sigmoid((aux_sdf - fluid_offset) / fluid_sharpness)
 
         # Obstacle surface weight — soft Gaussian peaked at d=0
-        w_obs = torch.exp(-sdf ** 2 / (2.0 * obstacle_sigma ** 2))
+        w_obs = torch.exp(-aux_sdf ** 2 / (2.0 * obstacle_sigma ** 2))
 
         # Obstacle no-slip residual: enforce u=0, v=0 where d≈0
         obs_noslip = lambda_obs * w_obs * (u_pred ** 2 + v_pred ** 2)
@@ -315,10 +310,7 @@ def make_auxiliary_var_fn(cfg: StenosisConfig,
     """
     Returns the `auxiliary_var_function` required by dde.data.PDE.
 
-    DeepXDE calls this as  fn(inputs, X)  where:
-        inputs : (N_functions, N_sensors) — branch inputs for the current batch
-                 (in our case, SDF fields evaluated at sensor points)
-        X      : (M, 2) — trunk points for this batch
+    DeepXDE calls this as  fn(X)  where X: (M, 2) trunk points for this batch
 
     We need to evaluate the SDF at X for the current geometry. Since `inputs`
     is the SDF-at-sensors array and not (a, b) directly, we recover (a, b) from
@@ -446,8 +438,8 @@ def build_deeponet_model(
     branch_layers = [N_sensors] + cfg.branch_net_hidden_layers + [p * 3]
     trunk_layers  = [2]         + cfg.trunk_net_hidden_layers  + [p]
 
-    net = dde.nn.DeepONetCartesianProd(     # NOTE: the *net* class is always CartesianProd;
-        branch_layers,                       # the *data* class determines Cartesian vs. not.
+    net = dde.nn.DeepONet(
+        branch_layers,
         trunk_layers,
         activation="tanh",
         kernel_initializer="Glorot uniform",

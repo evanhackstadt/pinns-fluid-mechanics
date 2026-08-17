@@ -355,6 +355,7 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
     loss_data = np.loadtxt(cfg.deeponet_dir / "loss.dat", delimiter=" ", comments="#")
     plot_loss_curves(loss_data, cfg.deeponet_dir,
                      loss_term_labels=["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
+                                       "BC (obstacle no-slip)",
                                        "BC (inlet u)", "BC (inlet v)", 
                                        "BC (wall u)", "BC (wall v)",
                                        "BC (outlet p)"])

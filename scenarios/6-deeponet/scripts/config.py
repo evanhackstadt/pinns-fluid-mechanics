@@ -54,17 +54,17 @@ class StenosisConfig:
     
     # --- DeepONet ---
     seed: int = 0
-    sensor_nx = 40      # fixed grid to sample SDF input function,
-    sensor_ny = 20      # held constant across geos b/c Cartesian Product
+    sensor_nx = 40     # fixed grid to sample SDF input function,
+    sensor_ny = 20     # held constant across geos b/c Cartesian Product
     # Default 40x20 = 800 sensors
     
-    n_interior: int = 2000      # default 2000, can tune. Fed to PDE loss.
-    n_boundary: int = 800       # default 800, can tune. Fed to BC loss.
-    n_obstacle: int = 100       # default 200, can tune.
-    n_test: int = 800
+    n_interior: int = 2000     # default 2000, can tune. Fed to PDE loss.
+    n_boundary: int = 800      # default 800, can tune. Fed to BC loss.
+    n_obstacle: int = 200      # default 200, can tune.
+    n_test: int = None
     
-    n_functions: int = 10        # geometries sampled per training step
-    n_functions_test: int = 5    # geometries used for test PDE loss
+    n_functions: int = 3        # geometries sampled per training step
+    n_functions_test: int = 3    # geometries used for test PDE loss
 
     loss_weights_deeponet: List[float] = field(
         default_factory=lambda: [10, 10, 10,   # PDE cont, xm, ym
@@ -75,17 +75,11 @@ class StenosisConfig:
     )
     
     branch_net_hidden_layers: List[int] = field(
-        default_factory=lambda: [256, 256, 128]     # neurons between input and latent dimension
+        default_factory=lambda: [256, 128]     # neurons between input and latent dimension
         # Larger first layer because N_sensors (800) is the raw input
     )
     trunk_net_hidden_layers: List[int] = field(
         default_factory=lambda: [128, 128, 128]     # neurons between input and latent dimension
-    )
-    loss_weights_deeponet: List[float] = field(     # will be reweighted dynamically during training
-        default_factory=lambda: [10, 10, 10,    # pde_cont, pde_xm, pde_ym
-                                 5, 5,          # bc_inlet_u, bc_inlet_v
-                                 25, 25,        # bc_wall_u, bc_wall_v
-                                 5]             # bc_outlet_p
     )
     
     # train adam
