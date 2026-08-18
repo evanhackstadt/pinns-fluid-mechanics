@@ -357,27 +357,6 @@ def make_auxiliary_var_fn(cfg: StenosisConfig,
 # SECTION 6: LABELED DATA / SUPERVISED TRAINING
 # ─────────────────────────────────────────────────────────────
 
-# --- Create Labeled Data ---
-def build_labeled_data(trunk_pts, fem_data_dict, cfg, uniform_frac=0.3):
-    """
-    Labels M trunk training points.
-    Returns dict mapping (a,b) --> fem_data, shape (M, 3), aligned with trunk_pts.
-    Each prefix of length n is the labeled set for that n.
-    """
-    from scipy.spatial import cKDTree
-
-    labeled_data_dict = {}
-    for i, (a, b) in enumerate(fem_data_dict.keys()):
-        fem_data = fem_data_dict[(a, b)]
-        fem_xy   = fem_data[:, 0:2]
-        fem_uvp  = fem_data[:, 2:5]
-
-        tree = cKDTree(fem_xy)
-        _, idx = tree.query(trunk_pts)           # (M,) indices into fem_data
-        labeled_data_dict[(a, b)] = fem_uvp[idx].astype(np.float32)
-
-    return labeled_data_dict
-
 
 class PDEOperatorSemiSupervised(dde.data.PDEOperator):
     """
@@ -389,48 +368,57 @@ class PDEOperatorSemiSupervised(dde.data.PDEOperator):
     
     Parameters
     ----------
-    labeled_data_dict : {(a,b): (M, 3) array of [u,v,p] at trunk_pts}
-                        Precomputed at build time via build_labeled_output().
+    labeled_data_dict : {(a,b): {"query": [x,y], "targets": [u,v,p]} }
                         Keys must match function_space.geometries exactly.
-    lambda_data   : float, weight on supervised loss (before reweighter)
     **kwargs      : passed through to PDEOperator.__init__
     """
     
-    def __init__(self, *args, labeled_data_dict: dict,
-                 lambda_data: float = 1.0, **kwargs):
+    def __init__(self, *args, labeled_data_dict: dict, cfg, **kwargs):
         super().__init__(*args, **kwargs)
-        self.labeled_data_dict = labeled_data_dict   # {(a,b): (M, 3)}
-        self.lambda_data   = lambda_data
+        self.labeled_data_dict = labeled_data_dict   # {(a,b): {"query", "targets"}}
+        self.cfg = cfg
         self._current_batch_y = None         # set during losses(), read from train_y
+        
 
     def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
-        # Get base PDE + BC losses from parent
+        # base PDE and BC loss
         base_losses = super().losses(targets, outputs, loss_fn, inputs, model, aux)
         
-        # Assemble supervised targets from last_sampled
-        # function_space.last_sampled was populated by random() in train_next_batch()
-        sampled = self.func_space.last_sampled  # [(a,b), ...]
+        # identify current geometries
+        sampled = self.func_space.last_sampled   # [(a,b), ...]
+        if len(sampled) == 0:
+            return base_losses
         
-        # Stack FEM solutions for the current batch geometries
-        # outputs shape from PDEOperator: (N_functions * M, n_outputs)
-        M = self.pde.train_x_all.shape[0]   # trunk points per geometry
+        # Predict on labeled data for the sampled geometries
+        loss_u_terms = []
+        loss_v_terms = []
+        loss_p_terms = []
         
-        batch_y = np.stack(
-            [self.labeled_data_dict[(a, b)] for (a, b) in sampled],
-            axis=0
-        ).reshape(-1, 3)   # (N_functions * M, 3)
+        for (a, b) in sampled:
+            query   = self.labeled_data_dict[(a, b)]["query"]
+            targets = self.labeled_data_dict[(a, b)]["targets"]
+            branch = self.func_space.eval_one(np.array([a, b], dtype=np.float32), self.eval_pts)
+            
+            # cast to tensors
+            branch = torch.tensor(branch[None, :], 
+                                  dtype=outputs.dtype, device=outputs.device)
+            
+            trunk = torch.tensor(query.astype(np.float32), 
+                                 dtype=outputs.dtype, device=outputs.device)
+            true = torch.tensor(targets, dtype=outputs.dtype, device=outputs.device)
+            
+            # forward pass --> compute loss
+            pred = model.net((branch, trunk))
+            
+            loss_u_terms.append(loss_fn(true[:, 0:1], pred[:, 0:1]))
+            loss_v_terms.append(loss_fn(true[:, 1:2], pred[:, 1:2]))
+            loss_p_terms.append(loss_fn(true[:, 2:3], pred[:, 2:3]))
+        
+        # aggregate across all sampled geometries
+        loss_u = sum(loss_u_terms) / len(loss_u_terms)
+        loss_v = sum(loss_v_terms) / len(loss_v_terms)
+        loss_p = sum(loss_p_terms) / len(loss_p_terms)
 
-        print(batch_y.shape)
-        
-        batch_y_tensor = torch.tensor(
-            batch_y, dtype=outputs.dtype, device=outputs.device
-        )
-        
-        # Supervised MSE for each output variable
-        loss_u = self.lambda_data * loss_fn(batch_y_tensor[:, 0:1], outputs[:, 0:1])
-        loss_v = self.lambda_data * loss_fn(batch_y_tensor[:, 1:2], outputs[:, 1:2])
-        loss_p = self.lambda_data * loss_fn(batch_y_tensor[:, 2:3], outputs[:, 2:3])
-        
         return base_losses + [loss_u, loss_v, loss_p]
 
 
@@ -442,28 +430,27 @@ def build_deeponet_model(
     cfg: StenosisConfig,
     sensors: np.ndarray,
     function_space: StenosisGeometrySpace,
-    fem_data_dict: dict,
+    labeled_data_dict: dict,
     p: int = 128,
     obstacle_sigma: float = 0.05,
     fluid_offset: float = -0.02,
     fluid_sharpness: float = 0.01,
     lambda_obs: float = 50.0,
-    log_data: bool = False,
 ) -> dde.Model:
     """
     Build the PI-DeepONet model using custom PDEOperatorSemiSupervised.
 
     Parameters
     ----------
-    cfg            : StenosisConfig
-    sensors        : (N_sensors, 2) fixed sensor grid
-    function_space : StenosisGeometrySpace instance (shared with aux_fn)
-    fem_data_dict  : dict mapping (a,b) -> fem_data array of shape (N, 5) = [x,y,u,v,p]
-    p              : inner product latent dimension
-    obstacle_sigma : Gaussian σ for obstacle BC soft weight
-    fluid_offset   : sigmoid offset for fluid mask (negative = buffer inside solid)
-    fluid_sharpness: sigmoid transition width for fluid mask
-    lambda_obs     : weight on the obstacle no-slip term
+    cfg              : StenosisConfig
+    sensors          : (N_sensors, 2) fixed sensor grid
+    function_space   : StenosisGeometrySpace instance (shared with aux_fn)
+    labeled_data_dict: dict mapping (a,b) -> dict with "branch_sdf", "trunk_pts", "targets"
+    p                : inner product latent dimension
+    obstacle_sigma   : Gaussian σ for obstacle BC soft weight
+    fluid_offset     : sigmoid offset for fluid mask (negative = buffer inside solid)
+    fluid_sharpness  : sigmoid transition width for fluid mask
+    lambda_obs       : weight on the obstacle no-slip term
 
     Returns
     -------
@@ -505,10 +492,8 @@ def build_deeponet_model(
         num_test=None,
         auxiliary_var_function=aux_fn,
     )
-
-    # --- Labeled Data ---
-    trunk_pts = pde_data.train_x_all
-    labeled_data_dict = build_labeled_data(trunk_pts, fem_data_dict, cfg, uniform_frac=0.3)
+    
+    print(type(labeled_data_dict[0.167, 0.1]))
 
     # --- PDEOperator data object (non-Cartesian) ---
     data = PDEOperatorSemiSupervised(
@@ -516,8 +501,9 @@ def build_deeponet_model(
         function_space=function_space,
         evaluation_points=sensors,       # branch discretisation (N_sensors, 2)
         num_function=cfg.n_functions,    # functions sampled per training step
-        num_test=cfg.n_functions_test,
+        num_test=None,
         labeled_data_dict=labeled_data_dict,
+        cfg=cfg,
     )
 
     # --- Network ---
@@ -592,21 +578,30 @@ def train_deeponet(
         8  BC: outlet p
         9  data supervision
     """
-    loss_weights = cfg.loss_weights_deeponet
-    model.compile("adam", lr=cfg.lr, loss_weights=loss_weights)
 
     reweighter = LossMagnitudeReweighter(period=2000)
 
     start_time = time.time()
     start_ts   = datetime.datetime.now().isoformat()
 
-    print(f"[DeepONet] Adam training for {cfg.n_adam} iterations...")
+    # Stage 1: pretrain with labeled data strong
+    print(f"[DeepONet] Adam training for {cfg.n_adam_1} iterations...")
+    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_1)
     loss_h1, state1 = model.train(
-        iterations=cfg.n_adam,
+        iterations=cfg.n_adam_1,
+        display_every=1000,
+    )
+    
+    # Stage 2: train with balanced loss weights
+    print(f"[DeepONet] Adam training for {cfg.n_adam_2} iterations...")
+    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_2)
+    loss_h1, state1 = model.train(
+        iterations=cfg.n_adam_2,
         callbacks=[reweighter],
         display_every=1000,
     )
 
+    # Stage 3: local refinement
     print(f"[DeepONet] L-BFGS fine-tuning for up to {cfg.n_lbfgs} iterations...")
     model.compile("L-BFGS", loss_weights=model.loss_weights)
     dde.optimizers.config.set_LBFGS_options(

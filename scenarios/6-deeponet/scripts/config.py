@@ -26,7 +26,7 @@ class StenosisConfig:
     # --- Geometry Variables ---
     
     # Sampling (overriden by manual lists below)
-    n_a_values: int = 10    # we will use upper triangle of axb combination matrix
+    n_a_values: int = 10    # we will use all a-b combinations where a≥b
     geometry_min_a: float = 0.1
     geometry_max_a: float = 0.7
     n_b_values: int = 10
@@ -37,6 +37,7 @@ class StenosisConfig:
 
     # Manual lists of (a, b) = ellipse semimajor, semiminor; where a>b
     # When these exist, they override the geometry sampling above
+    '''
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
             (0.3, 0.25),
@@ -53,7 +54,7 @@ class StenosisConfig:
             (0.65, 0.65),   # extrapolation
         ]
     )
-    
+    '''
     
     # --- Physics ---
     Re: float = 100         # Reynold's number = rho•U•L/µ, for nondimensionalization
@@ -72,19 +73,10 @@ class StenosisConfig:
     n_interior: int = 2000     # default 2000, can tune. Fed to PDE loss.
     n_boundary: int = 800      # default 800, can tune. Fed to BC loss.
     n_obstacle: int = 200      # default 200, can tune.
-    n_labeled_train: int = 10
+    n_labeled_train: int = 100
+    uniform_frac: float = 0.3
     
     n_functions: int = 10        # geometries sampled per training step
-    n_functions_test: int = 5    # geometries used for test PDE loss
-
-    loss_weights_deeponet: List[float] = field(
-        default_factory=lambda: [10, 10, 10,   # PDE cont, xm, ym
-                                100,          # obstacle no-slip
-                                5, 5,         # BC inlet u, v
-                                25, 25,       # BC wall u, v
-                                5,            # BC outlet p
-                                50]           # labeled data supervision
-    )
     
     branch_net_hidden_layers: List[int] = field(
         default_factory=lambda: [256, 128]     # neurons between input and latent dimension
@@ -94,11 +86,32 @@ class StenosisConfig:
         default_factory=lambda: [128, 128, 128]     # neurons between input and latent dimension
     )
     
-    # train adam
-    n_adam: int = 50000         # train for N iterations with Adam
-    lr: float = 1e-3            # Adam learning rate
+    # Training
+    lr: float = 1e-4        # learning rate
     
-    # train l-bfgs
+    # stage 1
+    n_adam_1: int = 3000    # iterations
+    loss_weights_1: List[float] = field(
+        default_factory=lambda: [
+            1, 1, 1, 1,     # PDE cont, xm, ym, obstacle no-slip
+            1, 1, 1, 1, 1,  # BCs
+            100, 100, 100   # labeled u, v, p
+        ]
+    )
+    
+    # stage 2
+    n_adam_2: int = 30000
+    loss_weights_2: List[float] = field(
+        default_factory=lambda: [
+            10, 10, 10,   # PDE cont, xm, ym
+            100,          # obstacle no-slip
+            5, 5,         # BC inlet u, v
+            25, 25,       # BC wall u, v
+            5,            # BC outlet p
+            25, 25, 25]   # labeled u, v, p
+    )
+    
+    # stage 3
     n_lbfgs: int = 25000        # max iterations on L-BFGS
     gtol_lbfgs: float = 1e-10   # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0

@@ -13,7 +13,7 @@ import sys
 import argparse
 from pathlib import Path
 import glob
-import json
+import json, pickle
 
 import numpy as np
 import torch
@@ -22,6 +22,7 @@ import deepxde as dde
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import read_mesh, solve_stenosis, fem_predict
+from data import build_labeled_data_dict
 from deeponet import *
 from analysis import *
 
@@ -62,11 +63,6 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
     Returns:
         cfg: new config object holding the sampled train and test geometries
     """
-    
-    # Override
-    if cfg.train_geometries is not None and cfg.test_geometries is not None:
-        print("Using manually specified geometries from config file.")
-        return cfg
 
     train_file = cfg.data_dir / f"geometries_train.json"
     test_file  = cfg.data_dir / f"geometries_test.json"
@@ -95,23 +91,24 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
             for a in a_vals:
                 for b in b_vals:
                     if a >= b:
-                        all_geos.append((float(a), float(b)))
+                        all_geos.append((round(a, 3), round(b, 3)))
 
+            # train-test split: hold out equally-spaced geos for testing
             N = len(all_geos)
             n_test = int(N * cfg.test_proportion)
-            rng = np.random.default_rng(seed=cfg.seed)
-            idx_test = rng.choice(N, size=n_test, replace=False)
-            idx_train = np.setdiff1d(np.arange(N), idx_test)    # remaining indices
+            test_idx = np.round(np.linspace(0, N - 1, n_test)).astype(int)
+            train_idx = np.setdiff1d(np.arange(N), test_idx)    # remaining indices
 
-            test_geos = [all_geos[i] for i in idx_test]
-            train_geos = [all_geos[i] for i in idx_train]
-        
-        with open(train_file, "w") as fp:
-            data = json.dumps(train_geos)
-            json.dump(data, fp)
-        with open(test_file, "w") as fp:
-            data = json.dumps(test_geos)
-            json.dump(data, fp)
+            test_geos = [all_geos[i] for i in test_idx]
+            train_geos = [all_geos[i] for i in train_idx]
+    
+    # Update cache
+    with open(train_file, "w") as fp:
+        data = json.dumps(train_geos)
+        json.dump(data, fp)
+    with open(test_file, "w") as fp:
+        data = json.dumps(test_geos)
+        json.dump(data, fp)
     
     # Update config object
     cfg.train_geometries = train_geos
@@ -225,11 +222,42 @@ def load_or_cache_sensors(cfg: StenosisConfig, force: bool = False):
         return sensors
 
 
+# --- 5. Labeled Data ---
+def load_or_cache_labeled_data(fem_data_dict: dict, sensors: np.ndarray, 
+                               cfg: StenosisConfig, force: bool = False):
+    """
+    Load labeled data dict from disk or compute and save it.
+    Combines sensor SDF values with fem_data_dict.
+    Returns a dict mapping (a,b) --> {
+        "query": (N_labeled, 2),
+        "targets": (N_labeled, 3)
+    }
+    """
+    labeled_path = cfg.data_dir / "labeled_data_dict.pkl"
+    
+    if not force and labeled_path.exists():
+        print(f"Loading labeled data from {labeled_path.name}")
+        with open(labeled_path, "rb") as fp:
+            labeled_data_dict = pickle.load(fp)
+
+    else:
+        print(f"Building labeled data dict, saving to {labeled_path.name}")
+        labeled_data_dict = build_labeled_data_dict(fem_data_dict, 
+                                                    cfg.n_labeled_train, 
+                                                    sensors, 
+                                                    cfg)
+    
+    with open(labeled_path, "wb") as fp:
+        pickle.dump(labeled_data_dict, fp)
+    
+    return labeled_data_dict
+    
+
 # --- 5. Train DeepONet ---
 def load_or_train_deeponet(cfg: StenosisConfig,
                            sensors: np.ndarray,
                            function_space: StenosisGeometrySpace,
-                           fem_data_dict_train: dict,
+                           labeled_data_dict: dict,
                            force_deeponet: bool):
     """
     Performs main DeepONet training on all training geometries
@@ -244,11 +272,10 @@ def load_or_train_deeponet(cfg: StenosisConfig,
     """
     model_prefix = cfg.deeponet_dir / "model"
     
-    assert list(fem_data_dict_train.keys()) == cfg.train_geometries, \
+    assert list(labeled_data_dict.keys()) == cfg.train_geometries, \
         "fem_data_dict key order must match cfg.train_geometries"
     
-    model = build_deeponet_model(cfg, sensors, function_space, 
-                                 fem_data_dict_train, log_data=True)
+    model = build_deeponet_model(cfg, sensors, function_space, labeled_data_dict)
     
     # proxy for train completion: saved model and training log
     existing_models = glob.glob(f"{model_prefix}*.pt")
@@ -497,11 +524,16 @@ def main():
     if args.force_resample:
         args.force_deeponet = True
     
+    
+    # Stage 1: Generate ellipse geometries
+    cfg = load_or_cache_ellipses(cfg, args.force_resample)
+    cfg.make_all_dirs()
+    
     # Validate geometry split
     for tup in cfg.train_geometries:
         if tup in cfg.test_geometries:
             raise ValueError(f"Duplicate geometries found in train and test geometries.\nTrain={cfg.train_geometries}\nTest={cfg.test_geometries}")
-    
+
     # Print to terminal
     print(f"\n{'='*50}\nEXECUTION PLAN\n{'='*50}")
     print(f"\n1. Generate meshes for each geometry (forced = {args.force_mesh})")
@@ -512,13 +544,6 @@ def main():
     print(f"6. Validate DeepONet on training geometries")
     print(f"8. Test DeepONet on testing geometries")
     print(f"9. Perform analysis and visualization")
-    
-
-    cfg.make_all_dirs()
-
-    # Stage 1: Generate ellipse geometries
-    cfg = load_or_cache_ellipses(cfg, args.force_resample)
-
     print(f"\nTrain geometries={cfg.train_geometries}")
     print(f"\nTest geometries{cfg.test_geometries}")
     
@@ -553,9 +578,16 @@ def main():
     sensors = load_or_cache_sensors(cfg)
     
     
+    # Stage 5: Labeled Data
+    labeled_data_dict = load_or_cache_labeled_data(fem_data_dict_train, 
+                                                   sensors, 
+                                                   cfg, 
+                                                   args.force_resample)
+    
+    
     # Stage 5: Build and Train DeepONet
     trained_model = load_or_train_deeponet(cfg, sensors, function_space, 
-                                           fem_data_dict_train, args.force_deeponet)
+                                           labeled_data_dict, args.force_deeponet)
     
     
     # Stage 6: Evaluate on Training Geometries
