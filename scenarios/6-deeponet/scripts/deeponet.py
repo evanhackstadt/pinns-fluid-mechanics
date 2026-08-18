@@ -492,8 +492,6 @@ def build_deeponet_model(
         num_test=None,
         auxiliary_var_function=aux_fn,
     )
-    
-    print(type(labeled_data_dict[0.167, 0.1]))
 
     # --- PDEOperator data object (non-Cartesian) ---
     data = PDEOperatorSemiSupervised(
@@ -595,7 +593,7 @@ def train_deeponet(
     # Stage 2: train with balanced loss weights
     print(f"[DeepONet] Adam training for {cfg.n_adam_2} iterations...")
     model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_2)
-    loss_h1, state1 = model.train(
+    loss_h2, state2 = model.train(
         iterations=cfg.n_adam_2,
         callbacks=[reweighter],
         display_every=1000,
@@ -610,7 +608,7 @@ def train_deeponet(
         maxiter=cfg.n_lbfgs,
         maxfun=cfg.n_lbfgs * 10,
     )
-    loss_h2, state2 = model.train(
+    loss_h3, state3 = model.train(
         display_every=1000,
         model_save_path=str(model_prefix),
     )
@@ -626,8 +624,9 @@ def train_deeponet(
         "start_timestamp":  start_ts,
         "end_timestamp":    datetime.datetime.now().isoformat(),
         "elapsed_time":     f"{mm}m {ss}s",
-        "n_adam":           cfg.n_adam,
-        "n_lbfgs_actual":   getattr(state2, "iteration", None),
+        "n_adam_1":           cfg.n_adam_1,
+        "n_adam_2":           cfg.n_adam_2,
+        "n_lbfgs_actual":   getattr(state3, "iteration", None),
         "n_sensors":        cfg.sensor_nx * cfg.sensor_ny,
         "n_functions_train": cfg.n_functions,
         "architecture":     "PDEOperator (non-Cartesian) + DeepONet",
@@ -680,9 +679,7 @@ def deeponet_predict(
     branch_in  = sdf_field[np.newaxis, :].astype(np.float32)   # (1, N_sensors)
     trunk_in   = query_pts[:, :2].astype(np.float32)            # (M, 2)
 
-    pred = model.predict((branch_in, trunk_in))   # may be (1, M, 3) or (M, 3)
-    if pred.ndim == 3:
-        pred = pred[0]                             # (M, 3)
+    pred = model.predict((branch_in, trunk_in))
 
     return np.concatenate([trunk_in, pred], axis=1)             # (M, 5)
 
