@@ -354,44 +354,84 @@ def make_auxiliary_var_fn(cfg: StenosisConfig,
 
 
 # ─────────────────────────────────────────────────────────────
-# SECTION 6: LABELED DATA
+# SECTION 6: LABELED DATA / SUPERVISED TRAINING
 # ─────────────────────────────────────────────────────────────
 
-def build_labeled_output(fem_data_dict: dict,
-                         trunk_pts: np.ndarray,
-                         cfg: StenosisConfig,
-                         ) -> np.ndarray:
+# --- Create Labeled Data ---
+def build_labeled_data(trunk_pts, fem_data_dict, cfg, uniform_frac=0.3):
     """
-    Evaluate FEM solution at shared trunk points for each training geometry.
-    Uses nearest-neighbour lookup from the cached FEM dense grid.
-
-    Parameters
-    ----------
-    fem_data_dict : {(a,b): (N_fem, 5)} with columns [x, y, u, v, p]
-    trunk_pts     : (M, 2) trunk spatial coordinates from pde_data.train_x_all
-    cfg           : StenosisConfig
-
-    Returns
-    -------
-    output_arr : (N_geom, M, 3) float32 — aligned [u, v, p] for each geometry
+    Labels M trunk training points.
+    Returns dict mapping (a,b) --> fem_data, shape (M, 3), aligned with trunk_pts.
+    Each prefix of length n is the labeled set for that n.
     """
     from scipy.spatial import cKDTree
 
-    geom_list   = list(fem_data_dict.keys())
-    N_geom      = len(geom_list)
-    M           = trunk_pts.shape[0]
-    output_arr  = np.zeros((N_geom, M, 3), dtype=np.float32)
-
-    for i, (a, b) in enumerate(geom_list):
+    labeled_data_dict = {}
+    for i, (a, b) in enumerate(fem_data_dict.keys()):
         fem_data = fem_data_dict[(a, b)]
         fem_xy   = fem_data[:, 0:2]
         fem_uvp  = fem_data[:, 2:5]
 
         tree = cKDTree(fem_xy)
         _, idx = tree.query(trunk_pts)           # (M,) indices into fem_data
-        output_arr[i] = fem_uvp[idx].astype(np.float32)
+        labeled_data_dict[(a, b)] = fem_uvp[idx].astype(np.float32)
 
-    return output_arr
+    return labeled_data_dict
+
+
+class PDEOperatorSemiSupervised(dde.data.PDEOperator):
+    """
+    Extends PDEOperator with a supervised data loss term.
+    
+    At each training step, after sampling geometries via function_space.random(),
+    we look up precomputed FEM solutions at the trunk points for those geometries
+    and compute MSE(u_pred, u_fem) alongside the PDE and BC losses.
+    
+    Parameters
+    ----------
+    labeled_data_dict : {(a,b): (M, 3) array of [u,v,p] at trunk_pts}
+                        Precomputed at build time via build_labeled_output().
+                        Keys must match function_space.geometries exactly.
+    lambda_data   : float, weight on supervised loss (before reweighter)
+    **kwargs      : passed through to PDEOperator.__init__
+    """
+    
+    def __init__(self, *args, labeled_data_dict: dict,
+                 lambda_data: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.labeled_data_dict = labeled_data_dict   # {(a,b): (M, 3)}
+        self.lambda_data   = lambda_data
+        self._current_batch_y = None         # set during losses(), read from train_y
+
+    def losses(self, targets, outputs, loss_fn, inputs, model, aux=None):
+        # Get base PDE + BC losses from parent
+        base_losses = super().losses(targets, outputs, loss_fn, inputs, model, aux)
+        
+        # Assemble supervised targets from last_sampled
+        # function_space.last_sampled was populated by random() in train_next_batch()
+        sampled = self.func_space.last_sampled  # [(a,b), ...]
+        
+        # Stack FEM solutions for the current batch geometries
+        # outputs shape from PDEOperator: (N_functions * M, n_outputs)
+        M = self.pde.train_x_all.shape[0]   # trunk points per geometry
+        
+        batch_y = np.stack(
+            [self.labeled_data_dict[(a, b)] for (a, b) in sampled],
+            axis=0
+        ).reshape(-1, 3)   # (N_functions * M, 3)
+
+        print(batch_y.shape)
+        
+        batch_y_tensor = torch.tensor(
+            batch_y, dtype=outputs.dtype, device=outputs.device
+        )
+        
+        # Supervised MSE for each output variable
+        loss_u = self.lambda_data * loss_fn(batch_y_tensor[:, 0:1], outputs[:, 0:1])
+        loss_v = self.lambda_data * loss_fn(batch_y_tensor[:, 1:2], outputs[:, 1:2])
+        loss_p = self.lambda_data * loss_fn(batch_y_tensor[:, 2:3], outputs[:, 2:3])
+        
+        return base_losses + [loss_u, loss_v, loss_p]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -411,7 +451,7 @@ def build_deeponet_model(
     log_data: bool = False,
 ) -> dde.Model:
     """
-    Build the PI-DeepONet model using PDEOperator (non-Cartesian).
+    Build the PI-DeepONet model using custom PDEOperatorSemiSupervised.
 
     Parameters
     ----------
@@ -466,28 +506,19 @@ def build_deeponet_model(
         auxiliary_var_function=aux_fn,
     )
 
+    # --- Labeled Data ---
+    trunk_pts = pde_data.train_x_all
+    labeled_data_dict = build_labeled_data(trunk_pts, fem_data_dict, cfg, uniform_frac=0.3)
+
     # --- PDEOperator data object (non-Cartesian) ---
-    data = dde.data.PDEOperator(
+    data = PDEOperatorSemiSupervised(
         pde=pde_data,
         function_space=function_space,
         evaluation_points=sensors,       # branch discretisation (N_sensors, 2)
         num_function=cfg.n_functions,    # functions sampled per training step
         num_test=cfg.n_functions_test,
+        labeled_data_dict=labeled_data_dict,
     )
-    
-    # Inject labeled FEM data if provided
-    if fem_data_dict is not None:
-        trunk_pts  = pde_data.train_x_all          # (M, 2)
-        output_arr = build_labeled_output(fem_data_dict, trunk_pts, cfg)
-        # PDEOperator expects train_y shape (N_geom, M, n_outputs)
-        data.train_y = output_arr
-    
-    # Log if requested
-    if log_data:
-        train_x_path = cfg.data_dir / "train_x.npy"
-        train_y_path = cfg.data_dir / "train_y.npy"
-        np.save(train_x_path, trunk_pts)
-        np.save(train_y_path, output_arr)
 
     # --- Network ---
     # Branch: N_sensors -> hidden -> p*3 (split_branch strategy)
@@ -559,6 +590,7 @@ def train_deeponet(
         6  BC: wall u
         7  BC: wall v
         8  BC: outlet p
+        9  data supervision
     """
     loss_weights = cfg.loss_weights_deeponet
     model.compile("adam", lr=cfg.lr, loss_weights=loss_weights)

@@ -72,8 +72,7 @@ class StenosisConfig:
     n_interior: int = 2000     # default 2000, can tune. Fed to PDE loss.
     n_boundary: int = 800      # default 800, can tune. Fed to BC loss.
     n_obstacle: int = 200      # default 200, can tune.
-    n_labeled_train: int = 10   # default 10, can tune.
-    uniform_frac: float = 0.3
+    n_labeled_train: int = 10
     
     n_functions: int = 10        # geometries sampled per training step
     n_functions_test: int = 5    # geometries used for test PDE loss
@@ -83,7 +82,8 @@ class StenosisConfig:
                                 100,          # obstacle no-slip
                                 5, 5,         # BC inlet u, v
                                 25, 25,       # BC wall u, v
-                                5]            # BC outlet p
+                                5,            # BC outlet p
+                                50]           # labeled data supervision
     )
     
     branch_net_hidden_layers: List[int] = field(
