@@ -327,13 +327,36 @@ def _prepare_grid_data(x_query, y_query, values, cfg, a, b):
     xs = np.linspace(-cfg.L/2, cfg.L/2, cfg.query_nx)
     ys = np.linspace(0, cfg.H_max, cfg.query_ny)
     XX, YY = np.meshgrid(xs, ys)
-    flat_x, flat_y = XX.ravel(), YY.ravel()
+    Z_flat = np.full(XX.size, np.nan)
 
-    # Compute the mask
-    outside = ellipse_mask(flat_x, flat_y, cfg, a, b)
-    Z_flat = np.full(len(flat_x), np.nan)
-    # Fill in values at valid points (outside ellipse)
-    Z_flat[outside] = values
+    x_query = np.asarray(x_query)
+    y_query = np.asarray(y_query)
+    values = np.asarray(values)
+    if not (x_query.ndim == y_query.ndim == values.ndim == 1):
+        raise ValueError("Heatmap query coordinates and values must be one-dimensional.")
+    if not (len(x_query) == len(y_query) == len(values)):
+        raise ValueError("Heatmap query coordinates and values must have the same length.")
+
+    # Use the supplied query coordinates as the source of truth. Recomputing
+    # the ellipse mask can disagree at boundary points due to float rounding.
+    x_idx = np.rint((x_query - xs[0]) / (xs[1] - xs[0])).astype(int)
+    y_idx = np.rint((y_query - ys[0]) / (ys[1] - ys[0])).astype(int)
+    valid_grid_points = (
+        (x_idx >= 0) & (x_idx < len(xs)) &
+        (y_idx >= 0) & (y_idx < len(ys))
+    )
+    if np.any(valid_grid_points):
+        valid_grid_points &= (
+            np.isclose(xs[np.clip(x_idx, 0, len(xs) - 1)], x_query, rtol=1e-6, atol=1e-7) &
+            np.isclose(ys[np.clip(y_idx, 0, len(ys) - 1)], y_query, rtol=1e-6, atol=1e-7)
+        )
+    if not np.all(valid_grid_points):
+        raise ValueError("Heatmap query coordinates do not lie on the configured uniform grid.")
+
+    flat_indices = y_idx * len(xs) + x_idx
+    if len(np.unique(flat_indices)) != len(flat_indices):
+        raise ValueError("Heatmap query coordinates contain duplicate grid points.")
+    Z_flat[flat_indices] = values
     # Mesh
     ZZ = Z_flat.reshape(cfg.query_ny, cfg.query_nx)
 
