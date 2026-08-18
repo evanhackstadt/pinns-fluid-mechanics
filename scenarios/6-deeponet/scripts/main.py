@@ -64,15 +64,15 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
         cfg: new config object holding the sampled train and test geometries
     """
 
-    train_file = cfg.data_dir / f"geometries_train.json"
-    test_file  = cfg.data_dir / f"geometries_test.json"
+    train_file = cfg.data_dir / f"geometries_train.pkl"
+    test_file  = cfg.data_dir / f"geometries_test.pkl"
     
     if not force_resample and train_file.exists() and test_file.exists():
         print(f"Loading geometries from files {train_file.name}, and {test_file.name}")
-        with open(train_file, "r") as fp:
-            train_geos = json.load(fp)
-        with open(test_file, "r") as fp:
-            test_geos = json.load(fp)
+        with open(train_file, "rb") as fp:
+            train_geos = pickle.load(fp)
+        with open(test_file, "rb") as fp:
+            test_geos = pickle.load(fp)
     
     else:
         
@@ -91,7 +91,7 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
             for a in a_vals:
                 for b in b_vals:
                     if a >= b:
-                        all_geos.append((round(a, 3), round(b, 3)))
+                        all_geos.append((float(a), float(b)))
 
             # train-test split: hold out equally-spaced geos for testing
             N = len(all_geos)
@@ -103,12 +103,10 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
             train_geos = [all_geos[i] for i in train_idx]
     
     # Update cache
-    with open(train_file, "w") as fp:
-        data = json.dumps(train_geos)
-        json.dump(data, fp)
-    with open(test_file, "w") as fp:
-        data = json.dumps(test_geos)
-        json.dump(data, fp)
+    with open(train_file, "wb") as fp:
+        pickle.dump(train_geos, fp)
+    with open(test_file, "wb") as fp:
+        pickle.dump(test_geos, fp)
     
     # Update config object
     cfg.train_geometries = train_geos
@@ -390,59 +388,6 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
         plot_velocity_quiver(deeponet_data, fem_data, cfg, tag,
                              output_dir, a, b)
         
-        '''
-        strategy_labels = ["baseline"]
-        deeponet_data_list = [deeponet_data]
-        
-        # fine-tuning strategies
-        for strategy, params in cfg.finetune_strategies.items():
-            output_dir_strat = cfg.geo_dir(a, b) / strategy
-            deeponet_data = deeponet_data_dict_test[(a, b)][strategy]
-            
-            plot_output_heatmaps(deeponet_data, fem_data, cfg, tag, 
-                                 output_dir_strat, a, b, separate_plots=False)
-            plot_error_heatmaps(deeponet_data, fem_data, cfg, tag, 
-                                output_dir_strat, a, b, separate_plots=False)
-            plot_velocity_quiver(deeponet_data, fem_data, cfg, tag,
-                                 output_dir_strat, a, b)
-
-            strategy_labels.append(strategy)
-            deeponet_data_list.append(deeponet_data)
-            
-            # plot loss curves
-            if params["finetune"]:
-                # determine loss terms based on strategy
-                if params["hardbc"]:
-                    loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)",
-                                        "BC (wall u)", "BC (wall v)", "BC (obstacle u)", "BC (obstacle v)"]
-                else:
-                    loss_term_labels = ["PDE (continuity)", "PDE (x-momentum)", "PDE (y-momentum)", 
-                                        "BC (inlet u)", "BC (inlet v)", "BC (wall u)", "BC (wall v)", 
-                                        "BC (obstacle u)", "BC (obstacle v)", "BC (outlet p)"]
-                obs_labels = ["BC (observed u)", "BC (observed v)", "BC (observed p)"]
-                loss_term_labels.extend([obs_labels[i] for i in cfg.test_observation_components])
-                
-                loss_file = cfg.deeponet_dir / strategy / cfg.geo_tag(a,b) / "loss.dat"
-                loss_data = np.loadtxt(loss_file, delimiter=" ", comments="#")
-                plot_loss_curves(loss_data, loss_file.parent, loss_term_labels)
-
-        # stacked strategy comparisons across all finetuning models for this geometry
-        plot_output_heatmaps_multi(deeponet_data_list, fem_data, cfg, tag, 
-                                    cfg.geo_dir(a, b) / "comparison",
-                                    a=a, b=b,
-                                    strategy_labels=strategy_labels,
-                                    fem_row_label="FEM")
-        plot_velocity_quiver_multi(deeponet_data_list, fem_data, cfg, tag,
-                                   cfg.geo_dir(a, b) / "comparison",
-                                   a=a, b=b, 
-                                   strategy_labels=strategy_labels,
-                                   fem_row_label="FEM")
-        plot_error_heatmaps_multi(deeponet_data_list, fem_data, cfg, tag, 
-                                    cfg.geo_dir(a, b) / "comparison",
-                                    a=a, b=b,
-                                    strategy_labels=strategy_labels)
-        
-    '''  
     print(f"Per-Geometry analysis and visualization complete.")
     
     
@@ -458,7 +403,8 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                                        "BC (obstacle no-slip)",
                                        "BC (inlet u)", "BC (inlet v)", 
                                        "BC (wall u)", "BC (wall v)",
-                                       "BC (outlet p)"])
+                                       "BC (outlet p)",
+                                       "Supervised u", "Supervised v", "Supervised p"])
     
     # compare train & test errors separately
     output_dir = cfg.summary_dir / "train"
@@ -542,7 +488,7 @@ def main():
     print(f"4. Assemble trunk data (extended trunk data, train geometries) (forced = {args.force_resample})")
     print(f"5. Build and Train DeepONet on {len(cfg.train_geometries)} training geometries (forced = {args.force_deeponet})")
     print(f"6. Validate DeepONet on training geometries")
-    print(f"8. Test DeepONet on testing geometries")
+    print(f"8. Test DeepONet on {len(cfg.test_geometries)} testing geometries")
     print(f"9. Perform analysis and visualization")
     print(f"\nTrain geometries={cfg.train_geometries}")
     print(f"\nTest geometries{cfg.test_geometries}")
