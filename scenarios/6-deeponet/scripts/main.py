@@ -22,7 +22,7 @@ import deepxde as dde
 from config import StenosisConfig
 from geometry import create_stenosis_mesh, ellipse_bottom, ellipse_mask
 from fem import read_mesh, solve_stenosis, fem_predict
-from data import build_labeled_data_dict
+from data import sample_ellipse_geometries, build_labeled_data_dict
 from deeponet import *
 from analysis import *
 
@@ -56,7 +56,7 @@ def parse_args():
 # --- 1. Sample Geometries ---
 def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
     """
-    Samples or loads a variety of ellipse geometries, train/test splits, and writes & returns config object
+    Sample or load (a, b) pairs, handle train/test split, and writes & returns config object.
     Args:
         cfg: custom config object
         force_resample: whether or not to force resampmling of geometries.
@@ -75,38 +75,15 @@ def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
             test_geos = pickle.load(fp)
     
     else:
-        
-        override = hasattr(cfg, 'train_geometries') and hasattr(cfg, 'test_geometries') \
-                   and cfg.train_geometries is not None and cfg.test_geometries is not None
-        
-        if override:
-            train_geos = cfg.train_geometries
-            test_geos = cfg.test_geometries
-        else:
-            print(f"Sampling ellipse geometries")
-            a_vals = np.linspace(cfg.geometry_min_a, cfg.geometry_max_a, cfg.n_a_values)
-            b_vals = np.linspace(cfg.geometry_min_b, cfg.geometry_max_b, cfg.n_b_values)
-            
-            all_geos = []
-            for a in a_vals:
-                for b in b_vals:
-                    if a >= b:
-                        all_geos.append((float(a), float(b)))
-
-            # train-test split: hold out equally-spaced geos for testing
-            N = len(all_geos)
-            n_test = int(N * cfg.test_proportion)
-            test_idx = np.round(np.linspace(0, N - 1, n_test)).astype(int)
-            train_idx = np.setdiff1d(np.arange(N), test_idx)    # remaining indices
-
-            test_geos = [all_geos[i] for i in test_idx]
-            train_geos = [all_geos[i] for i in train_idx]
-    
-    # Update cache
-    with open(train_file, "wb") as fp:
-        pickle.dump(train_geos, fp)
-    with open(test_file, "wb") as fp:
-        pickle.dump(test_geos, fp)
+        train_geos, test_geos = sample_ellipse_geometries(cfg)
+        print(f"Saving geometries to files {train_file.name}, and {test_file.name}")
+        # Update cache - pickle for load/store tuples, csv for visual inspection
+        with open(train_file, "wb") as fp:
+            pickle.dump(train_geos, fp)
+            np.savetxt(cfg.data_dir / "geometries_train.csv", train_geos, delimiter=",", fmt='%.3g')
+        with open(test_file, "wb") as fp:
+            pickle.dump(test_geos, fp)
+            np.savetxt(cfg.data_dir / "geometries_test.csv", test_geos, delimiter=",", fmt='%.3g')
     
     # Update config object
     cfg.train_geometries = train_geos

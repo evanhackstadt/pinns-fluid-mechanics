@@ -2,16 +2,78 @@
 
 """
 2D Stenosis Geometry-Conditioned PINN
-    Functions to assemble multi-geometry dataset for PINN training.
-    DeepXDE model can't take multiple geometries, so create PointSet
+    Functions to assemble labeled data dict for Supervised DeepONet
 
 Evan Hackstadt
 Rugonyi Lab
 """
 
 import numpy as np
+from scipy.stats.qmc import LatinHypercube, scale
 import torch
 import deepxde as dde
+
+
+
+# ———————————————— GEOMETRY DATASET ————————————————
+
+def sample_ellipse_geometries(cfg):
+    """
+    Sample or load (a, b) pairs via Latin Hypercube Sampling within the triangle a >= b. 
+    Oversamples and filters; repeats until n_total valid samples found.
+    Returns (train_geos, test_geos) where each is a unique list of tuples (a, b)
+    """
+    # check if vals manually specified in config ==> override sampling
+    override_train = hasattr(cfg, 'train_geometries') and cfg.train_geometries is not None
+    override_test  = hasattr(cfg, 'test_geometries') and cfg.test_geometries is not None
+
+    if override_train and override_test:
+        print("Ellipse geometries manually specified in config file. Caching and returning.")
+    
+    else:
+        # need to sample either train, test, or all geometries
+        def _sample_geometries_lhs(cfg, target_n, exclude=[]):
+            sampler = LatinHypercube(d=2, seed=cfg.seed)
+            samples = []
+            while len(samples) < target_n:
+                raw = sampler.random(n=target_n * 3)   # oversample to account for rejection
+                scaled = scale(raw, [cfg.a_range[0], cfg.b_range[0]], 
+                                    [cfg.a_range[1], cfg.b_range[1]])
+                valid = scaled[scaled[:, 0] >= scaled[:, 1]]   # enforce a >= b
+                valid_tups = [(round(a, 3), round(b, 3)) for a, b in valid if (a, b) not in exclude]    # cast to tuple and enforce train/test exclude  
+                samples.extend(valid_tups)
+            
+            pairs = [(round(float(a), 3), round(float(b), 3)) for (a, b) in samples[:target_n]]     # cast to floats, round again for safety
+            return pairs
+
+        if override_train and not override_test:
+            print(f"Sampling {cfg.n_test_geometries} testing ellipse geometries; training geometries manually specified.")
+            train_geos = cfg.train_geometries
+            test_geos = _sample_geometries_lhs(cfg, cfg.n_test_geometries, exclude=train_geos)
+        elif override_test and not override_train:
+            print(f"Sampling {cfg.n_train_geometries} training ellipse geometries; testing geometries manually specified.")
+            test_geos = cfg.test_geometries
+            train_geos = _sample_geometries_lhs(cfg, cfg.n_train_geometries, exclude=test_geos)
+        else:
+            n_total = cfg.n_train_geometries + cfg.n_test_geometries
+            print(f"Sampling {n_total} total ellipse geometries --> hold out {cfg.n_test_geometries} test geometries.")
+            all_geos = _sample_geometries_lhs(cfg, n_total)
+            # train-test split: hold out equally-spaced geos for testing
+            test_idx = np.round(np.linspace(0, n_total - 1, cfg.n_test_geometries)).astype(int)
+            train_idx = np.setdiff1d(np.arange(n_total), test_idx)    # remaining indices
+            test_geos = [all_geos[i] for i in test_idx]
+            train_geos = [all_geos[i] for i in train_idx]
+
+    # Sort by area as a measure of severity
+    area = lambda ab: ab[0] * ab[1]
+    train_geos.sort(key=area)
+    test_geos.sort(key=area)
+
+    print(type(train_geos))
+    print(type(train_geos[0]))
+    print(type(train_geos[0][0]))
+
+    return train_geos, test_geos
 
 
 

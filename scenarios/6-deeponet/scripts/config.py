@@ -26,17 +26,14 @@ class StenosisConfig:
     # --- Geometry Variables ---
     
     # Sampling (overriden by manual lists below)
-    n_a_values: int = 10    # we will use all a-b combinations where a≥b
-    geometry_min_a: float = 0.1
-    geometry_max_a: float = 0.7
-    n_b_values: int = 10
-    geometry_min_b: float = 0.1
-    geometry_max_b: float = 0.7
-    test_proportion: float = 0.3
+    n_train_geometries: int = 100
+    n_test_geometries: int = 5
+    a_range: List[int] = field(default_factory=lambda: [0.15, 0.65])
+    b_range: List[int] = field(default_factory=lambda: [0.15, 0.65])
     
 
     # Manual lists of (a, b) = ellipse semimajor, semiminor; where a>b
-    # When these exist, they override the geometry sampling above
+    # When either of these exist, they override the geometry sampling above
     '''
     train_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
@@ -45,16 +42,18 @@ class StenosisConfig:
             (0.65, 0.60)
         ]
     )
+    '''
     
     test_geometries: List[Tuple[float, float]] = field(
         default_factory=lambda: [
-            (0.25, 0.20),   # extrapolation
-            (0.45, 0.35),   # interpolation
+            (0.10, 0.10),   # extrapolation, beyond
+            (0.20, 0.15),   # extrapolation, border
+            (0.35, 0.30),   # interpolation
             (0.60, 0.50),   # interpolation
-            (0.65, 0.65),   # extrapolation
+            (0.70, 0.60),   # extrapolation, border
+            (0.70, 0.70),   # extrapolation, beyond
         ]
     )
-    '''
     
     # --- Physics ---
     Re: float = 100         # Reynold's number = rho•U•L/µ, for nondimensionalization
@@ -66,41 +65,43 @@ class StenosisConfig:
     
     # --- DeepONet ---
     seed: int = 0
-    sensor_nx = 40     # fixed grid to sample SDF input function,
-    sensor_ny = 20     # held constant across geos b/c Cartesian Product
+    sensor_nx = 20     # fixed grid to sample SDF input function,
+    sensor_ny = 10     # held constant across geos b/c Cartesian Product
     # Default 40x20 = 800 sensors
     
     n_interior: int = 2000     # default 2000, can tune. Fed to PDE loss.
-    n_boundary: int = 800      # default 800, can tune. Fed to BC loss.
-    n_obstacle: int = 200      # default 200, can tune.
+    n_boundary: int = 600      # default 800, can tune. Fed to BC loss.
+    n_obstacle: int = 100      # default 200, can tune.
     n_labeled_train: int = 100
     uniform_frac: float = 0.3
     
-    n_functions: int = 10        # geometries sampled per training step
+    n_functions: int = 10        # geometries sampled per training step (batch size)
     
     branch_net_hidden_layers: List[int] = field(
-        default_factory=lambda: [256, 128]     # neurons between input and latent dimension
+        default_factory=lambda: [256, 128, 64]     # neurons between input and latent dimension
         # Larger first layer because N_sensors (800) is the raw input
     )
     trunk_net_hidden_layers: List[int] = field(
         default_factory=lambda: [128, 128, 128]     # neurons between input and latent dimension
     )
+    latent_dim_p: int = 64
     
-    # Training
-    lr: float = 1e-4        # learning rate
-    
-    # stage 1
-    n_adam_1: int = 3000    # iterations
+    # Training (stage 1)
+    n_adam_1: int = 2000     # iterations
+    lr_1: float = 5e-4      # learning rate
     loss_weights_1: List[float] = field(
         default_factory=lambda: [
-            1, 1, 1, 1,     # PDE cont, xm, ym, obstacle no-slip
-            1, 1, 1, 1, 1,  # BCs
-            100, 100, 100   # labeled u, v, p
+            # ignore PDE loss and BCs
+            0, 0, 0, 0,     # PDE cont, xm, ym, obstacle no-slip
+            0, 0, 0, 0, 0,  # BCs
+            25, 25, 25   # labeled u, v, p
         ]
     )
     
-    # stage 2
-    n_adam_2: int = 30000
+    # Training (stage 2)
+    n_adam_2: int = 20000
+    lr_2: float = 1e-3
+    lr_2_min: float = 1e-4     # min lr at the end of cosine decay (pytorch eta_min)
     loss_weights_2: List[float] = field(
         default_factory=lambda: [
             10, 10, 10,   # PDE cont, xm, ym
@@ -111,8 +112,8 @@ class StenosisConfig:
             25, 25, 25]   # labeled u, v, p
     )
     
-    # stage 3
-    n_lbfgs: int = 25000        # max iterations on L-BFGS
+    # Training (stage 3)
+    n_lbfgs: int = 10000        # max iterations on L-BFGS
     gtol_lbfgs: float = 1e-10   # tight gradient tolerance stopping criteria for L-BFGS, default=1e-7
     ftol_lbfgs: float = 0.0
     

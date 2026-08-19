@@ -431,7 +431,6 @@ def build_deeponet_model(
     sensors: np.ndarray,
     function_space: StenosisGeometrySpace,
     labeled_data_dict: dict,
-    p: int = 128,
     obstacle_sigma: float = 0.05,
     fluid_offset: float = -0.02,
     fluid_sharpness: float = 0.01,
@@ -508,6 +507,7 @@ def build_deeponet_model(
     # Branch: N_sensors -> hidden -> p*3 (split_branch strategy)
     # Trunk:  2         -> hidden -> p   (x_coord, y_coord)
     N_sensors = sensors.shape[0]
+    p = cfg.latent_dim_p
     branch_layers = [N_sensors] + cfg.branch_net_hidden_layers + [p * 3]
     trunk_layers  = [2]         + cfg.trunk_net_hidden_layers  + [p]
 
@@ -577,14 +577,18 @@ def train_deeponet(
         9  data supervision
     """
 
-    reweighter = LossMagnitudeReweighter(period=2000)
+    reweighter = LossMagnitudeReweighter(period=500)
 
     start_time = time.time()
     start_ts   = datetime.datetime.now().isoformat()
 
     # Stage 1: pretrain with labeled data strong
     print(f"[DeepONet] Adam training for {cfg.n_adam_1} iterations...")
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_1)
+    model.compile(
+        "adam", 
+        lr=cfg.lr_1, 
+        loss_weights=cfg.loss_weights_1
+    )
     loss_h1, state1 = model.train(
         iterations=cfg.n_adam_1,
         display_every=1000,
@@ -592,7 +596,12 @@ def train_deeponet(
     
     # Stage 2: train with balanced loss weights
     print(f"[DeepONet] Adam training for {cfg.n_adam_2} iterations...")
-    model.compile("adam", lr=cfg.lr, loss_weights=cfg.loss_weights_2)
+    model.compile(
+        "adam", 
+        lr=cfg.lr_2, 
+        decay=("cosine", cfg.n_adam_2, cfg.lr_2_min),     # pytorch: cosine, T_max, eta_min
+        loss_weights=cfg.loss_weights_2
+    )
     loss_h2, state2 = model.train(
         iterations=cfg.n_adam_2,
         callbacks=[reweighter],
@@ -601,7 +610,10 @@ def train_deeponet(
 
     # Stage 3: local refinement
     print(f"[DeepONet] L-BFGS fine-tuning for up to {cfg.n_lbfgs} iterations...")
-    model.compile("L-BFGS", loss_weights=model.loss_weights)
+    model.compile(
+        "L-BFGS", 
+        loss_weights=model.loss_weights
+    )
     dde.optimizers.config.set_LBFGS_options(
         gtol=cfg.gtol_lbfgs,
         ftol=cfg.ftol_lbfgs,
