@@ -227,9 +227,9 @@ def build_channel_bcs(geometry, cfg: StenosisConfig) -> list:
 
 def make_pde_loss(cfg: StenosisConfig,
                   function_space: StenosisGeometrySpace,
-                  obstacle_sigma: float = 0.05,
+                  obstacle_sigma: float = 0.10,
                   fluid_offset: float = -0.02,
-                  fluid_sharpness: float = 0.01,
+                  fluid_sharpness: float = 0.02,
                   lambda_obs: float = 50.0):
     """
     Returns the PDE residual function for PDEOperator.
