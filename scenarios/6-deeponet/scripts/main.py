@@ -54,7 +54,7 @@ def parse_args():
 
 
 # --- 1. Sample Geometries ---
-def load_or_cache_ellipses(cfg: StenosisConfig, force_resample):
+def load_or_cache_geometries(cfg: StenosisConfig, force_resample: bool):
     """
     Sample or load (a, b) pairs, handle train/test split, and writes & returns config object.
     Args:
@@ -329,7 +329,7 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
         cfg: custom config object
     """
     
-    
+    '''
     # TRAIN geometries - per-geometry analyses
     for (a, b) in deeponet_data_dict_train.keys():
         print(f"Visualizing training geometry ({a}, {b})")
@@ -364,7 +364,7 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                             output_dir, a, b, separate_plots=False)
         plot_velocity_quiver(deeponet_data, fem_data, cfg, tag,
                              output_dir, a, b)
-        
+    '''
     print(f"Per-Geometry analysis and visualization complete.")
     
     
@@ -383,16 +383,27 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                                        "BC (outlet p)",
                                        "Supervised u", "Supervised v", "Supervised p"])
     
+    # plot mega-grid of all testing outputs
+    output_dir = cfg.results_dir / "test" / "ALL"
+    plot_output_heatmaps_multi(deeponet_data_dict_test, fem_data_dict_test, cfg, "test", output_dir)
+    plot_error_heatmaps_multi(deeponet_data_dict_test, fem_data_dict_test, cfg, "test", output_dir)
+    plot_velocity_quiver_multi(deeponet_data_dict_test, fem_data_dict_test, cfg, "test", output_dir)
+
     # compare train & test errors separately
     output_dir = cfg.summary_dir / "train"
     plot_error_comparison(train_error_summary_path, output_dir, cfg, 
-                          parameter="ab", fixed_strat=None, strategies=None)
+                          parameter="ab_area", fixed_strat=None, 
+                          strategies=None, lineplot=True)
+    plot_error_comparison(train_error_summary_path, output_dir, cfg, 
+                          parameter="a", fixed_strat=None, 
+                          strategies=None, lineplot=True)
+    plot_error_comparison(train_error_summary_path, output_dir, cfg, 
+                          parameter="b", fixed_strat=None, 
+                          strategies=None, lineplot=True)
     
     output_dir = cfg.summary_dir / "test"
     plot_error_comparison(test_error_summary_path, output_dir, cfg, 
-                          parameter="ab", fixed_strat=None, 
-                          strategies=None)
-    # plot_error_comparison_2d(test_error_summary_path, output_dir, cfg, strategy_order=test_strats)
+                          parameter="ab", fixed_strat=None, strategies=None)
     
     # compare train + test errors side-by-side
     with open(train_error_summary_path, "r", encoding="utf-8") as f:
@@ -406,12 +417,9 @@ def visualization(deeponet_data_dict_train, deeponet_data_dict_test,
         json.dump(all_errors, f, indent=2)
     
     output_dir = cfg.summary_dir / "all"
-    plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="ab",
+    plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="ab_area",
                           fixed_strat=None, strategies=None)
-    plot_error_comparison(all_error_summary_path, output_dir, cfg, parameter="strategy",
-                          fixed_ab=None, strategies=None)
-    # plot_error_comparison_2d(all_error_summary_path, output_dir, cfg, strategy_order=all_strategies)
-    
+
     # log config
     config_dict = cfg.config_as_dict()
     config_path = cfg.results_dir / "config_log.json"
@@ -447,7 +455,7 @@ def main():
     
     
     # Stage 1: Generate ellipse geometries
-    cfg = load_or_cache_ellipses(cfg, args.force_resample)
+    cfg = load_or_cache_geometries(cfg, args.force_resample)
     cfg.make_all_dirs()
     
     # Validate geometry split
