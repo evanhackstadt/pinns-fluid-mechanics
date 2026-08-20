@@ -228,7 +228,7 @@ def load_or_cache_labeled_data(fem_data_dict: dict, sensors: np.ndarray,
     return labeled_data_dict
     
 
-# --- 5. Train DeepONet ---
+# --- 6. Train DeepONet ---
 def load_or_train_deeponet(cfg: StenosisConfig,
                            sensors: np.ndarray,
                            function_space: StenosisGeometrySpace,
@@ -270,7 +270,7 @@ def load_or_train_deeponet(cfg: StenosisConfig,
 
 
 
-# --- 7. DeepONet Predict on Training Set ---
+# --- 7-8. DeepONet Predict ---
 def predict_and_save_errors(fem_data_dict, model, sensors, function_space, label, cfg: StenosisConfig):
     """
     Evaluate the model on each provided geometry, compare to ground truth, and save errors.
@@ -442,10 +442,8 @@ def main():
         cfg.n_lbfgs = args.n_lbfgs
     if args.mesh_size:
         cfg.mesh_size = args.mesh_size
-    
-    # downstream dependencies
     if args.force_resample:
-        args.force_deeponet = True
+        args.force_deeponet = True  # dependency
     
     
     # Stage 1: Generate ellipse geometries
@@ -508,19 +506,19 @@ def main():
                                                    args.force_resample)
     
     
-    # Stage 5: Build and Train DeepONet
+    # Stage 6: Build and Train DeepONet
     trained_model = load_or_train_deeponet(cfg, sensors, function_space, 
                                            labeled_data_dict, args.force_deeponet)
     
     
-    # Stage 6: Evaluate on Training Geometries
+    # Stage 7: Evaluate on Training Geometries
     deeponet_data_dict_train, summary_train = predict_and_save_errors(fem_data_dict_train, 
                                                                       trained_model,
                                                                       sensors, 
                                                                       function_space,
                                                                       "train", 
                                                                       cfg)
-    # Stage 7: Evaluate on Testing Geometries
+    # Stage 8: Evaluate on Testing Geometries
     deeponet_data_dict_test, summary_test = predict_and_save_errors(fem_data_dict_test, 
                                                                     trained_model, 
                                                                     sensors, 
@@ -529,13 +527,10 @@ def main():
                                                                     cfg)
     
     
-    # Stage 8: Analysis and Visualization
+    # Stage 9: Analysis and Visualization
     visualization(deeponet_data_dict_train, deeponet_data_dict_test,
                     fem_data_dict_train, fem_data_dict_test,
                     summary_train, summary_test, cfg)
-    
-    # Stage 9: Analysis and Visualization - alongside Scneario 5 PINN
-    # TODO
     
     print(f"\n{'='*50}\nPIPELINE COMPLETE\n{'='*50}")
     

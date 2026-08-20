@@ -582,7 +582,7 @@ def train_deeponet(
     start_time = time.time()
     start_ts   = datetime.datetime.now().isoformat()
 
-    # Stage 1: pretrain with labeled data strong
+    # Stage 1: pretrain with only supervised data loss
     print(f"[DeepONet] Adam training for {cfg.n_adam_1} iterations...")
     model.compile(
         "adam", 
@@ -591,10 +591,10 @@ def train_deeponet(
     )
     loss_h1, state1 = model.train(
         iterations=cfg.n_adam_1,
-        display_every=1000,
+        display_every=200,
     )
     
-    # Stage 2: train with balanced loss weights
+    # Stage 2: train with balanced loss weights (PDE, BCs, and data)
     print(f"[DeepONet] Adam training for {cfg.n_adam_2} iterations...")
     model.compile(
         "adam", 
@@ -636,8 +636,8 @@ def train_deeponet(
         "start_timestamp":  start_ts,
         "end_timestamp":    datetime.datetime.now().isoformat(),
         "elapsed_time":     f"{mm}m {ss}s",
-        "n_adam_1":           cfg.n_adam_1,
-        "n_adam_2":           cfg.n_adam_2,
+        "n_adam_1":         cfg.n_adam_1,
+        "n_adam_2":         cfg.n_adam_2,
         "n_lbfgs_actual":   getattr(state3, "iteration", None),
         "n_sensors":        cfg.sensor_nx * cfg.sensor_ny,
         "n_functions_train": cfg.n_functions,

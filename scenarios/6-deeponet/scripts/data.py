@@ -69,10 +69,6 @@ def sample_ellipse_geometries(cfg):
     train_geos.sort(key=area)
     test_geos.sort(key=area)
 
-    print(type(train_geos))
-    print(type(train_geos[0]))
-    print(type(train_geos[0][0]))
-
     return train_geos, test_geos
 
 
