@@ -219,6 +219,19 @@ class StenosisConfig:
             if f.is_file():
                 f.unlink()
     
+    def remove_invalid_geo_dirs(self, parent_dir):
+        valid = [self.geo_tag(a, b) for (a, b) in self.train_geometries]
+        valid.extend([self.geo_tag(a, b) for (a, b) in self.test_geometries])
+        for d in parent_dir.iterdir():
+            if d.is_dir() and d.name not in valid:
+                self.clear_dir(d)
+                try:
+                    d.rmdir()
+                except OSError:
+                    print(f"subfolders in {d.name} or other issue, cleared but could not remove")
+                else:
+                    print(f"cleared and removed {d.name}")
+    
     
     def config_as_dict(self):
         return {k: str(v) for k, v in asdict(self).items()}

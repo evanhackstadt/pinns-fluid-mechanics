@@ -702,7 +702,7 @@ def restore_deeponet(
     cfg: StenosisConfig,
 ) -> dde.Model:
     """Restore network weights into an already-built model."""
-    model.compile("adam", lr=cfg.lr)
+    model.compile("adam", lr=cfg.lr_1)
     checkpoints = list(model_prefix.parent.glob(f"{model_prefix.name}-*.pt"))
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found at {model_prefix}")
